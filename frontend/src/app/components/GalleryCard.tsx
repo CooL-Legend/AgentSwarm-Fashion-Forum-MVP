@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 export interface GalleryImage {
     id: number | string;
@@ -9,21 +10,67 @@ export interface GalleryImage {
     description?: string;
     category?: string;
     created_at?: string;
+    likeCount?: number;
 }
 
 interface Props {
     image: GalleryImage;
     index: number;
     onClick: () => void;
+    userId: number | null;
 }
 
-export default function GalleryCard({ image, index, onClick }: Props) {
+export default function GalleryCard({ image, index, onClick, userId }: Props) {
     const [loaded, setLoaded] = useState(false);
+    const [liked, setLiked] = useState(false);
+    const [likeCount, setLikeCount] = useState(image.likeCount || 0);
+    const [isLoading, setIsLoading] = useState(false);
+
+    const handleLike = async (e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!userId || isLoading) return;
+
+        setIsLoading(true);
+        try {
+            if (liked) {
+                // Unlike - delete the interaction
+                await supabase
+                    .from("interactions")
+                    .delete()
+                    .match({ 
+                        user_id: userId, 
+                        item_id: image.id
+                    });
+                setLiked(false);
+                setLikeCount(likeCount - 1);
+            } else {
+                // Like - insert new interaction with weight (Image Likes = 1.0)
+                const { error } = await supabase
+                    .from("interactions")
+                    .insert({
+                        user_id: userId,
+                        item_id: image.id,
+                        interaction_type: "LIKE",
+                        weight: 1.0,
+                        created_at: new Date().toISOString(),
+                    });
+
+                if (!error) {
+                    setLiked(true);
+                    setLikeCount(likeCount + 1);
+                }
+            }
+        } catch (error) {
+            console.error("Failed to like:", error);
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     return (
-        <button
+        <div
             onClick={onClick}
-            className="group relative mb-4 w-full break-inside-avoid overflow-hidden rounded-2xl border border-zinc-800/60 bg-zinc-900 transition-all duration-300 hover:border-amber-500/30 hover:shadow-[0_0_30px_rgba(245,158,11,0.08)] focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+            className="group relative mb-4 w-full break-inside-avoid overflow-hidden rounded-2xl border border-zinc-800/60 bg-zinc-900 transition-all duration-300 hover:border-amber-500/30 hover:shadow-[0_0_30px_rgba(245,158,11,0.08)] cursor-pointer"
             style={{ animationDelay: `${index * 60}ms` }}
         >
             {/* Skeleton */}
@@ -58,22 +105,32 @@ export default function GalleryCard({ image, index, onClick }: Props) {
                 )}
             </div>
 
-            {/* Top-right action dot */}
-            <div className="absolute right-2.5 top-2.5 flex h-8 w-8 items-center justify-center rounded-full bg-black/40 opacity-0 backdrop-blur-sm transition-opacity duration-300 group-hover:opacity-100">
-                <svg
-                    className="h-4 w-4 text-white"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
+            {/* Top-right action dot with like button */}
+            <div className="absolute right-2.5 top-2.5 flex gap-2">
+                <button
+                    onClick={handleLike}
+                    disabled={!userId || isLoading}
+                    className={`flex h-8 w-8 items-center justify-center rounded-full backdrop-blur-sm transition-all duration-300 group-hover:opacity-100 ${userId ? "bg-black/40 hover:bg-amber-500/40" : "bg-black/40 opacity-0"} ${liked ? "text-amber-400" : "text-white"}`}
+                    title={userId ? (liked ? "Unlike" : "Like") : "Select a user to like"}
                 >
-                    <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-                    />
-                </svg>
+                    <svg
+                        className="h-4 w-4"
+                        fill={liked ? "currentColor" : "none"}
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                    >
+                        <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"
+                        />
+                    </svg>
+                </button>
+                <div className="flex h-8 items-center justify-center rounded-full bg-black/40 px-2 opacity-0 backdrop-blur-sm transition-opacity duration-300 group-hover:opacity-100">
+                    <span className="text-xs font-medium text-white">{likeCount}</span>
+                </div>
             </div>
-        </button>
+        </div>
     );
 }

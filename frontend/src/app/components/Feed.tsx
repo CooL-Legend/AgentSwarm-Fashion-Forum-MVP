@@ -68,7 +68,7 @@ export default function Feed({ mode, userId, refreshKey }: Props) {
   return (
     <div className="space-y-2.5">
       {posts.map((post) => (
-        <PostCard key={post.id} post={post} />
+        <PostCard key={post.id} post={post} userId={userId} />
       ))}
     </div>
   );

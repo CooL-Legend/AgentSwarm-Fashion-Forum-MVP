@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { useState } from "react";
+import { supabase } from "@/lib/supabase";
 
 const CATEGORY_COLORS: Record<string, string> = {
   Streetwear: "bg-emerald-500/15 text-emerald-400 ring-emerald-500/20",
@@ -27,6 +29,11 @@ interface Post {
   imageUrl?: string;
 }
 
+interface Props {
+  post: Post;
+  userId: number | null;
+}
+
 function timeAgo(dateStr: string): string {
   const seconds = Math.floor(
     (Date.now() - new Date(dateStr + "Z").getTime()) / 1000,
@@ -40,7 +47,66 @@ function timeAgo(dateStr: string): string {
   return `${days}d ago`;
 }
 
-export default function PostCard({ post }: { post: Post }) {
+export default function PostCard({ post, userId }: Props) {
+  const [liked, setLiked] = useState<"up" | "down" | null>(null);
+  const [likeCount, setLikeCount] = useState(post.likeCount);
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleVote = async (voteType: "up" | "down") => {
+    if (!userId || isLoading) return;
+    
+    // Toggle off if clicking same vote
+    if (liked === voteType) {
+      setLiked(null);
+      setLikeCount(voteType === "up" ? likeCount - 1 : likeCount + 1);
+      
+      // Delete the interaction from Supabase
+      await supabase
+        .from("interactions")
+        .delete()
+        .match({ 
+          user_id: userId, 
+          item_id: post.id
+        });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // First, delete any existing interaction
+      await supabase
+        .from("interactions")
+        .delete()
+        .match({ 
+          user_id: userId, 
+          item_id: post.id
+        });
+
+      // Calculate weight: Post Likes = 1.0, Dislikes = -0.5
+      const weight = voteType === "up" ? 1.0 : -0.5;
+
+      // Then insert new interaction with weight
+      const { error } = await supabase
+        .from("interactions")
+        .insert({
+          user_id: userId,
+          item_id: post.id,
+          interaction_type: voteType === "up" ? "LIKE" : "DISLIKE",
+          weight: weight,
+          created_at: new Date().toISOString(),
+        });
+
+      if (!error) {
+        const diff = liked ? 2 : 1;
+        setLiked(voteType);
+        setLikeCount(voteType === "up" ? likeCount + diff : likeCount - diff);
+      }
+    } catch (error) {
+      console.error("Failed to vote:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const catColors =
     CATEGORY_COLORS[post.category] || "bg-zinc-500/15 text-zinc-400 ring-zinc-500/20";
   const avatarColor = PERSONA_COLORS[post.username] || "bg-zinc-600";
@@ -50,13 +116,27 @@ export default function PostCard({ post }: { post: Post }) {
       <article className="flex gap-0 overflow-hidden rounded-lg border border-zinc-800 bg-zinc-900 transition-colors hover:border-zinc-700">
         {/* Reddit-style vote column */}
         <div className="flex w-10 shrink-0 flex-col items-center gap-1 bg-zinc-950/50 py-3">
-          <svg className="h-4 w-4 text-zinc-600 transition-colors group-hover:text-amber-400" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 3a.75.75 0 01.55.24l3.25 3.5a.75.75 0 11-1.1 1.02L10 4.852 7.3 7.76a.75.75 0 01-1.1-1.02l3.25-3.5A.75.75 0 0110 3z" clipRule="evenodd" />
-          </svg>
-          <span className="text-xs font-bold text-zinc-300">{post.likeCount}</span>
-          <svg className="h-4 w-4 text-zinc-700" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M10 17a.75.75 0 01-.55-.24l-3.25-3.5a.75.75 0 111.1-1.02L10 15.148l2.7-2.908a.75.75 0 111.1 1.02l-3.25 3.5A.75.75 0 0110 17z" clipRule="evenodd" />
-          </svg>
+          <button
+            onClick={(e) => { e.preventDefault(); handleVote("up"); }}
+            disabled={!userId || isLoading}
+            className={`transition-colors group-hover:text-amber-400 ${liked === "up" ? "text-amber-400" : "text-zinc-600"} ${!userId ? "cursor-not-allowed opacity-50" : ""}`}
+            title={userId ? "Upvote" : "Select a user to vote"}
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 3a.75.75 0 01.55.24l3.25 3.5a.75.75 0 11-1.1 1.02L10 4.852 7.3 7.76a.75.75 0 01-1.1-1.02l3.25-3.5A.75.75 0 0110 3z" clipRule="evenodd" />
+            </svg>
+          </button>
+          <span className={`text-xs font-bold ${liked ? "text-amber-400" : "text-zinc-300"}`}>{likeCount}</span>
+          <button
+            onClick={(e) => { e.preventDefault(); handleVote("down"); }}
+            disabled={!userId || isLoading}
+            className={`transition-colors ${liked === "down" ? "text-rose-400" : "text-zinc-700"} ${!userId ? "cursor-not-allowed opacity-50" : ""}`}
+            title={userId ? "Downvote" : "Select a user to vote"}
+          >
+            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 17a.75.75 0 01-.55-.24l-3.25-3.5a.75.75 0 111.1-1.02L10 15.148l2.7-2.908a.75.75 0 111.1 1.02l-3.25 3.5A.75.75 0 0110 17z" clipRule="evenodd" />
+            </svg>
+          </button>
         </div>
 
         {/* Content */}

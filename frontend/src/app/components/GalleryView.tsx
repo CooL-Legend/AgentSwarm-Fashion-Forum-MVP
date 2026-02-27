@@ -12,20 +12,50 @@ export default function GalleryView() {
     const [search, setSearch] = useState("");
     const [activeCategory, setActiveCategory] = useState<string | null>(null);
     const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
+    const [activeUserId, setActiveUserId] = useState<number | null>(null);
+    const [users, setUsers] = useState<{id: number; username: string}[]>([]);
 
-    // ── Fetch images from Supabase ──────────────────────────────
+    // Fetch users for the selector
+    useEffect(() => {
+        fetch("/api/auth/users")
+            .then(r => r.json())
+            .then(data => {
+                if (Array.isArray(data)) {
+                    setUsers(data.slice(0, 20)); // Limit to 20 users
+                }
+            })
+            .catch(console.error);
+    }, []);
+
+    // ── Fetch product images from Supabase `items` table ────────
     useEffect(() => {
         async function fetchImages() {
             setLoading(true);
             setError(null);
             try {
                 const { data, error: sbError } = await supabase
-                    .from("images")
+                    .from("items")
                     .select("*")
+                    .eq("item_type", "PRODUCT")
+                    .not("media_url", "is", null)
                     .order("created_at", { ascending: false });
 
                 if (sbError) throw sbError;
-                setImages(data ?? []);
+
+                const mapped: GalleryImage[] =
+                    (data ?? []).map((item: any) => ({
+                        id: item.id,
+                        image_url: item.media_url,
+                        title: item.title,
+                        description: item.body_text,
+                        category:
+                            Array.isArray(item.tags) && item.tags.length > 0
+                                ? item.tags[0]
+                                : undefined,
+                        created_at: item.created_at,
+                    })) ?? [];
+
+                setImages(mapped);
             } catch (err: unknown) {
                 const message =
                     err instanceof Error ? err.message : "Failed to load images";
@@ -67,14 +97,32 @@ export default function GalleryView() {
     return (
         <div className="mx-auto max-w-7xl px-4 py-6">
             {/* ── Header ─────────────────────────────────────────── */}
-            <div className="mb-6">
-                <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-                    Inspiration&nbsp;
-                    <span className="text-amber-400">Board</span>
-                </h1>
-                <p className="mt-1 text-sm text-zinc-500">
-                    Curated looks, moods, and references from the community
-                </p>
+            <div className="mb-6 flex items-start justify-between">
+                <div>
+                    <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
+                        Inspiration&nbsp;
+                        <span className="text-amber-400">Board</span>
+                    </h1>
+                    <p className="mt-1 text-sm text-zinc-500">
+                        Curated looks, moods, and references from the community
+                    </p>
+                </div>
+                {/* User selector for likes */}
+                <div className="flex items-center gap-2">
+                    <span className="text-xs text-zinc-500">As:</span>
+                    <select
+                        value={activeUserId ?? ""}
+                        onChange={(e) => setActiveUserId(e.target.value ? Number(e.target.value) : null)}
+                        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 focus:border-amber-500 focus:outline-none"
+                    >
+                        <option value="">Select user</option>
+                        {users.map((user) => (
+                            <option key={user.id} value={user.id}>
+                                {user.username}
+                            </option>
+                        ))}
+                    </select>
+                </div>
             </div>
 
             {/* ── Search + Filters ───────────────────────────────── */}
@@ -173,7 +221,7 @@ export default function GalleryView() {
                     <p className="mt-3 text-xs text-zinc-600">
                         Make sure your <code className="text-zinc-400">.env.local</code>{" "}
                         has valid Supabase credentials and the{" "}
-                        <code className="text-zinc-400">images</code> table exists.
+                        <code className="text-zinc-400">items</code> table exists.
                     </p>
                 </div>
             )}
@@ -203,7 +251,7 @@ export default function GalleryView() {
                     <p className="mt-1 text-xs text-zinc-600">
                         {search || activeCategory
                             ? "Try broadening your search"
-                            : "Add images to your Supabase 'images' table to see them here"}
+                            : "Add images to your Supabase 'items' table to see them here"}
                     </p>
                 </div>
             )}
@@ -217,6 +265,7 @@ export default function GalleryView() {
                             image={img}
                             index={i}
                             onClick={() => setLightbox(img)}
+                            userId={activeUserId}
                         />
                     ))}
                 </div>
@@ -235,6 +284,7 @@ export default function GalleryView() {
                 <GalleryLightbox
                     image={lightbox}
                     onClose={() => setLightbox(null)}
+                    userId={activeUserId}
                 />
             )}
         </div>

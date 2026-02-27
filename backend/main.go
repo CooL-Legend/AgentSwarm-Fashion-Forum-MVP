@@ -244,16 +244,44 @@ func createComment(c *gin.Context) {
 }
 
 // Interactions
+// Weight calculation:
+// - Post Likes: 1.0 (Strong explicit signal)
+// - Image Likes: 1.0 (Strong explicit signal)
+// - Image Views: 0.2 to 0.5 (Implicit signal - longer views get higher weight)
 func addInteraction(c *gin.Context) {
 	var req struct {
-		UserID int    `json:"userId" binding:"required"`
-		PostID int    `json:"postId" binding:"required"`
-		Type   string `json:"type" binding:"required"`
+		UserID   int     `json:"userId" binding:"required"`
+		ItemID   int     `json:"itemId" binding:"required"`
+		ItemType string  `json:"itemType" binding:"required"` // "POST" or "IMAGE"
+		Type     string  `json:"type" binding:"required"`     // "LIKE" or "VIEW"
+		Duration float64 `json:"duration"`                    // View duration in seconds (for VIEW interactions)
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Calculate weight based on interaction type
+	weight := 0.0
+	switch req.Type {
+	case "LIKE":
+		weight = 1.0 // Strong explicit signal
+	case "VIEW":
+		if req.ItemType == "IMAGE" {
+			// Image views: 0.2 to 0.5 based on duration
+			if req.Duration < 2.0 {
+				weight = 0.2
+			} else if req.Duration < 5.0 {
+				weight = 0.35
+			} else if req.Duration < 10.0 {
+				weight = 0.45
+			} else {
+				weight = 0.5 // Longer views = higher interest
+			}
+		} else {
+			weight = 0.1 // Post views are weaker signals
+		}
 	}
 
 	dbMutex.Lock()
@@ -262,8 +290,10 @@ func addInteraction(c *gin.Context) {
 	interaction := Interaction{
 		ID:        db.NextID.Interactions,
 		UserID:    req.UserID,
-		PostID:    req.PostID,
+		ItemID:    req.ItemID,
+		ItemType:  req.ItemType,
 		Type:      req.Type,
+		Weight:    weight,
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 	}
 	db.Interactions = append(db.Interactions, interaction)

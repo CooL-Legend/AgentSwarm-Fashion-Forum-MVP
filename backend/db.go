@@ -35,8 +35,10 @@ type Comment struct {
 type Interaction struct {
 	ID        int    `json:"id"`
 	UserID    int    `json:"userId"`
-	PostID    int    `json:"postId"`
-	Type      string `json:"type"`
+	ItemID    int    `json:"itemId"`
+	ItemType  string `json:"itemType"` // "POST" or "IMAGE"
+	Type      string `json:"type"`     // "LIKE" or "VIEW"
+	Weight    float64 `json:"weight"`
 	Timestamp string `json:"timestamp"`
 }
 
