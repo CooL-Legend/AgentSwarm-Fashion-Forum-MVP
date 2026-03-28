@@ -1,12 +1,12 @@
-import PostDetailView from "@/app/components/PostDetailView";
+import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
 export default async function PostPage({
-  params,
+  params: _params,
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const { id } = await params;
-  return <PostDetailView postId={id} />;
+  await _params;
+  redirect("/");
 }

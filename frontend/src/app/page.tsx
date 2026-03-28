@@ -1,7 +1,7 @@
-import ForumHome from "./components/ForumHome";
+import GalleryView from "./components/GalleryView";
 
 export const dynamic = "force-dynamic";
 
 export default function HomePage() {
-  return <ForumHome />;
+  return <GalleryView />;
 }

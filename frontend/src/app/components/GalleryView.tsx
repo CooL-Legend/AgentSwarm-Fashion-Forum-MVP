@@ -1,58 +1,39 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import GalleryCard, { type GalleryImage } from "./GalleryCard";
+import { type GalleryImage } from "./GalleryCard";
 import GalleryLightbox from "./GalleryLightbox";
+
+const SKELETON_CARD_HEIGHTS = [220, 280, 260, 320, 240, 300];
 
 export default function GalleryView() {
     const [images, setImages] = useState<GalleryImage[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
-    const [activeCategory, setActiveCategory] = useState<string | null>(null);
     const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
-    const [activeUserId, setActiveUserId] = useState<number | null>(null);
-    const [users, setUsers] = useState<{id: number; username: string}[]>([]);
 
-    // Fetch users for the selector
-    useEffect(() => {
-        fetch("/api/auth/users")
-            .then(r => r.json())
-            .then(data => {
-                if (Array.isArray(data)) {
-                    setUsers(data.slice(0, 20)); // Limit to 20 users
-                }
-            })
-            .catch(console.error);
-    }, []);
-
-    // ── Fetch product images from Supabase `items` table ────────
+    // ── Fetch product images from Supabase `products` table ─────
     useEffect(() => {
         async function fetchImages() {
             setLoading(true);
             setError(null);
             try {
                 const { data, error: sbError } = await supabase
-                    .from("items")
-                    .select("*")
-                    .eq("item_type", "PRODUCT")
-                    .not("media_url", "is", null)
+                    .from("products")
+                    .select("id, image_url, title, created_at")
+                    .not("image_url", "is", null)
                     .order("created_at", { ascending: false });
 
                 if (sbError) throw sbError;
 
                 const mapped: GalleryImage[] =
-                    (data ?? []).map((item: any) => ({
-                        id: item.id,
-                        image_url: item.media_url,
-                        title: item.title,
-                        description: item.body_text,
-                        category:
-                            Array.isArray(item.tags) && item.tags.length > 0
-                                ? item.tags[0]
-                                : undefined,
-                        created_at: item.created_at,
+                    (data ?? []).map((product: any) => ({
+                        id: product.id,
+                        image_url: product.image_url,
+                        title: product.title,
+                        created_at: product.created_at,
                     })) ?? [];
 
                 setImages(mapped);
@@ -67,118 +48,62 @@ export default function GalleryView() {
         fetchImages();
     }, []);
 
-    // ── Derived data ────────────────────────────────────────────
-    const categories = useMemo(() => {
-        const set = new Set<string>();
-        images.forEach((img) => {
-            if (img.category) set.add(img.category);
-        });
-        return Array.from(set).sort();
-    }, [images]);
-
-    const filtered = useMemo(() => {
-        let list = images;
-        if (activeCategory) {
-            list = list.filter((img) => img.category === activeCategory);
-        }
-        if (search.trim()) {
-            const q = search.toLowerCase();
-            list = list.filter(
-                (img) =>
-                    img.title?.toLowerCase().includes(q) ||
-                    img.description?.toLowerCase().includes(q) ||
-                    img.category?.toLowerCase().includes(q)
-            );
-        }
-        return list;
-    }, [images, activeCategory, search]);
+    const filtered = search.trim()
+        ? images.filter((img) =>
+            img.title?.toLowerCase().includes(search.toLowerCase())
+        )
+        : images;
 
     // ── UI ──────────────────────────────────────────────────────
     return (
-        <div className="mx-auto max-w-7xl px-4 py-6">
-            {/* ── Header ─────────────────────────────────────────── */}
-            <div className="mb-6 flex items-start justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold tracking-tight text-zinc-100">
-                        Inspiration&nbsp;
-                        <span className="text-amber-400">Board</span>
-                    </h1>
-                    <p className="mt-1 text-sm text-zinc-500">
-                        Curated looks, moods, and references from the community
-                    </p>
-                </div>
-                {/* User selector for likes */}
-                <div className="flex items-center gap-2">
-                    <span className="text-xs text-zinc-500">As:</span>
-                    <select
-                        value={activeUserId ?? ""}
-                        onChange={(e) => setActiveUserId(e.target.value ? Number(e.target.value) : null)}
-                        className="rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300 focus:border-amber-500 focus:outline-none"
-                    >
-                        <option value="">Select user</option>
-                        {users.map((user) => (
-                            <option key={user.id} value={user.id}>
-                                {user.username}
-                            </option>
-                        ))}
-                    </select>
-                </div>
-            </div>
+        <div className="mx-auto max-w-7xl px-4 py-8">
+            {/* ── Hero ───────────────────────────────────────────── */}
+            <div className="relative mb-8 overflow-hidden rounded-3xl border border-zinc-800/80 bg-gradient-to-b from-zinc-900 via-zinc-900 to-zinc-950 shadow-[0_20px_70px_rgba(0,0,0,0.45)]">
+                <div className="pointer-events-none absolute -left-28 top-0 h-64 w-64 rounded-full bg-amber-400/12 blur-3xl" />
+                <div className="pointer-events-none absolute -right-24 bottom-0 h-64 w-64 rounded-full bg-orange-500/10 blur-3xl" />
 
-            {/* ── Search + Filters ───────────────────────────────── */}
-            <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center">
-                {/* Search */}
-                <div className="relative flex-1">
-                    <svg
-                        className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                    >
-                        <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-                        />
-                    </svg>
-                    <input
-                        type="text"
-                        placeholder="Search looks, styles, moods…"
-                        value={search}
-                        onChange={(e) => setSearch(e.target.value)}
-                        className="w-full rounded-xl border border-zinc-800 bg-zinc-900 py-2.5 pl-10 pr-4 text-sm text-zinc-200 placeholder-zinc-600 outline-none transition-colors focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/30"
-                    />
-                </div>
-
-                {/* Category pills */}
-                {categories.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                        <button
-                            onClick={() => setActiveCategory(null)}
-                            className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeCategory === null
-                                ? "bg-amber-500 text-zinc-950 shadow-md shadow-amber-500/20"
-                                : "border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
-                                }`}
-                        >
-                            All
-                        </button>
-                        {categories.map((cat) => (
-                            <button
-                                key={cat}
-                                onClick={() =>
-                                    setActiveCategory(activeCategory === cat ? null : cat)
-                                }
-                                className={`rounded-full px-3 py-1.5 text-xs font-medium transition-all ${activeCategory === cat
-                                    ? "bg-amber-500 text-zinc-950 shadow-md shadow-amber-500/20"
-                                    : "border border-zinc-700 text-zinc-400 hover:border-zinc-600 hover:text-zinc-300"
-                                    }`}
-                            >
-                                {cat}
-                            </button>
-                        ))}
+                <div className="relative p-5 sm:p-7">
+                    <div>
+                        <p className="mb-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-300/80">
+                            Product Gallery
+                        </p>
+                        <h1 className="text-3xl font-bold tracking-tight text-zinc-100 sm:text-4xl">
+                            Inspiration&nbsp;
+                            <span className="bg-gradient-to-r from-amber-300 via-orange-300 to-rose-300 bg-clip-text text-transparent">
+                                Board
+                            </span>
+                        </h1>
+                        <p className="mt-2 max-w-xl text-sm text-zinc-400">
+                            Image-only view powered directly by the Supabase products table.
+                        </p>
                     </div>
-                )}
+
+                    {/* Center search bar */}
+                    <div className="mx-auto my-6 w-full max-w-2xl">
+                        <div className="relative">
+                            <svg
+                                className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                                stroke="currentColor"
+                                strokeWidth={2}
+                            >
+                                <path
+                                    strokeLinecap="round"
+                                    strokeLinejoin="round"
+                                    d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+                                />
+                            </svg>
+                            <input
+                                type="text"
+                                placeholder="Search images by title..."
+                                value={search}
+                                onChange={(e) => setSearch(e.target.value)}
+                                className="w-full rounded-2xl border border-zinc-700/80 bg-zinc-950/90 py-3 pl-11 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/20"
+                            />
+                        </div>
+                    </div>
+                </div>
             </div>
 
             {/* ── States ─────────────────────────────────────────── */}
@@ -189,7 +114,7 @@ export default function GalleryView() {
                             key={i}
                             className="mb-4 break-inside-avoid animate-pulse rounded-2xl bg-zinc-800/60"
                             style={{
-                                height: `${200 + Math.floor(Math.random() * 200)}px`,
+                                height: `${SKELETON_CARD_HEIGHTS[i % SKELETON_CARD_HEIGHTS.length]}px`,
                                 animationDelay: `${i * 100}ms`,
                             }}
                         />
@@ -221,7 +146,7 @@ export default function GalleryView() {
                     <p className="mt-3 text-xs text-zinc-600">
                         Make sure your <code className="text-zinc-400">.env.local</code>{" "}
                         has valid Supabase credentials and the{" "}
-                        <code className="text-zinc-400">items</code> table exists.
+                        <code className="text-zinc-400">products</code> table exists.
                     </p>
                 </div>
             )}
@@ -244,29 +169,35 @@ export default function GalleryView() {
                         </svg>
                     </div>
                     <p className="text-sm font-medium text-zinc-400">
-                        {search || activeCategory
+                        {search
                             ? "No images match your filters"
                             : "No images yet"}
                     </p>
                     <p className="mt-1 text-xs text-zinc-600">
-                        {search || activeCategory
+                        {search
                             ? "Try broadening your search"
-                            : "Add images to your Supabase 'items' table to see them here"}
+                            : "Add images to your Supabase 'products' table to see them here"}
                     </p>
                 </div>
             )}
 
-            {/* ── Masonry Grid ───────────────────────────────────── */}
+            {/* ── Image Grid ─────────────────────────────────────── */}
             {!loading && !error && filtered.length > 0 && (
                 <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
                     {filtered.map((img, i) => (
-                        <GalleryCard
+                        <button
+                            type="button"
                             key={img.id}
-                            image={img}
-                            index={i}
                             onClick={() => setLightbox(img)}
-                            userId={activeUserId}
-                        />
+                            className="group mb-4 block w-full break-inside-avoid overflow-hidden rounded-2xl border border-zinc-800/70 bg-zinc-900/80 transition-all duration-300 hover:border-zinc-700"
+                        >
+                            <img
+                                src={img.image_url}
+                                alt={img.title || `Product image ${i + 1}`}
+                                loading="lazy"
+                                className="w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
+                            />
+                        </button>
                     ))}
                 </div>
             )}
@@ -284,7 +215,7 @@ export default function GalleryView() {
                 <GalleryLightbox
                     image={lightbox}
                     onClose={() => setLightbox(null)}
-                    userId={activeUserId}
+                    userId={null}
                 />
             )}
         </div>

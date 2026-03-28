@@ -18,67 +18,49 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function generateVectors() {
   console.log("🚀 Starting Vector Generation...");
 
-  // 2. Fetch items that DON'T have a vector yet
-  const { data: items, error } = await supabase
-    .from('items')
+  // 2. Fetch products that DON'T have a vector yet
+  const { data: products, error } = await supabase
+    .from('products')
     .select('*')
-    .is('embedding', null) // Only get rows with NULL embeddings
+    .is('product_embedding', null)
     
   if (error) {
     console.error("Error fetching data:", error);
     return;
   }
 
-  console.log(`Found ${items.length} items to process.`);
+  console.log(`Found ${products.length} products to process.`);
 
 
-//   3. Loop through each item
-  for (const item of items) {
+//   3. Loop through each product
+  for (const product of products) {
     let vector = null;
-    console.log(`Processing Item ID ${item.id} (${item.item_type})...`);
+    console.log(`Processing Product ID ${product.id} (${product.product_type || 'PRODUCT'})...`);
 
     try {
-      // SCENARIO A: It's an Image (Pinterest style)
-      if (item.item_type === 'PRODUCT') {
-        if (!item.media_url) {
-          console.warn(`Skipping Item ${item.id}: No image URL found.`);
-          continue;
-        }
-        
-        // Call your Hugging Face /embed-image endpoint
-        const response = await axios.post(`${HF_API_URL}/embed-image`, {
-          image_url: item.media_url
-        });
-        vector = response.data.vector;
-      } 
-      
-      // SCENARIO B: It's a Text Post (Reddit style)
-      else if (item.item_type === 'POST') {
-        if (!item.body_text) {
-          console.warn(`Skipping Item ${item.id}: No text content found.`);
-          continue;
-        }
-
-        // Call your Hugging Face /embed-text endpoint
-        const response = await axios.post(`${HF_API_URL}/embed-text`, {
-          text: item.body_text
-        });
-        vector = response.data.vector;
+      if (!product.image_url) {
+        console.warn(`Skipping Product ${product.id}: No image URL found.`);
+        continue;
       }
+
+      const response = await axios.post(`${HF_API_URL}/embed-image`, {
+        image_url: product.image_url
+      });
+      vector = response.data.vector;
 
       // 4. Update Supabase with the new Vector
       if (vector) {
         const { error: updateError } = await supabase
-          .from('items')
-          .update({ embedding: vector })
-          .eq('id', item.id);
+          .from('products')
+          .update({ product_embedding: vector })
+          .eq('id', product.id);
 
-        if (updateError) console.error(`Failed to update Item ${item.id}:`, updateError);
-        else console.log(`✅ Updated Item ${item.id}`);
+        if (updateError) console.error(`Failed to update Product ${product.id}:`, updateError);
+        else console.log(`✅ Updated Product ${product.id}`);
       }
 
     } catch (err) {
-      console.error(`❌ Error processing Item ${item.id}:`);
+      console.error(`❌ Error processing Product ${product.id}:`);
       // Log simple error message (e.g., "500 Internal Server Error" or timeout)
       console.error(err.message);
     }
@@ -87,7 +69,7 @@ async function generateVectors() {
     await sleep(1000); 
   }
 
-  console.log("🎉 Batch complete! Run the script again if you have more items.");
+  console.log("🎉 Batch complete! Run the script again if you have more products.");
 }
 
 generateVectors();

@@ -1,7 +1,6 @@
 // generate_embeddings.js
 require('dotenv').config({ path: '../frontend/.env.local' });
 const { createClient } = require('@supabase/supabase-js');
-const axios = require('axios');
 
 // 1. CONFIGURATION
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -12,17 +11,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 /**
  * Get interactions for a user from the interactions table
- * @param {number} user_id - The user's ID
+ * @param {string} userId - The user's ID
  * @param {number} interaction_window - Number of recent interactions to fetch (default: 50)
- * @returns {Promise<Array>} - Array of interactions with item_id, interaction_type, and weight
+ * @returns {Promise<Array>} - Array of interactions with derived weights
  */
 async function getUserInteractions(userId, interactionWindow = 50) {
     console.log("Getting interactions for userId:", userId);
 
     const { data: interactions, error } = await supabase
         .from('interactions')
-        .select('id, user_id, item_id, interaction_type, weight')
+        .select('interaction_id, user_id, item_id, item_type, type')
         .eq('user_id', userId)
+        .eq('item_type', 'PRODUCT')
         .order('created_at', { ascending: false })
         .limit(interactionWindow);
 
@@ -32,12 +32,26 @@ async function getUserInteractions(userId, interactionWindow = 50) {
     }
 
     console.log(`Found ${interactions.length} interactions for user id: ${userId}`);
-    return interactions;
+    return interactions.map((interaction) => ({
+        ...interaction,
+        weight: getInteractionWeight(interaction.type),
+    }));
+}
+
+function getInteractionWeight(type) {
+    switch (type) {
+        case 'LIKE':
+            return 1.0;
+        case 'VIEW':
+            return 0.2;
+        default:
+            return 0.1;
+    }
 }
 
 /**
- * Fetch embeddings for a list of item IDs from the items table
- * @param {Array<number>} itemIds - Array of item IDs
+ * Fetch embeddings for a list of item IDs from the products table
+ * @param {Array<string>} itemIds - Array of item IDs
  * @returns {Promise<Array>} - Array of items with valid embeddings (as arrays)
  */
 async function getItemEmbeddings(itemIds) {
@@ -46,8 +60,8 @@ async function getItemEmbeddings(itemIds) {
     }
 
     const { data: items, error } = await supabase
-        .from('items')
-        .select('id, embedding')
+        .from('products')
+        .select('id, product_embedding')
         .in('id', itemIds);
 
     if (error) {
@@ -62,7 +76,7 @@ async function getItemEmbeddings(itemIds) {
     // Parse string embeddings into arrays and filter valid ones
     const validItems = [];
     for (const item of items) {
-        let embedding = item.embedding;
+        let embedding = item.product_embedding;
         
         // Handle string format (JSON string from DB)
         if (typeof embedding === 'string') {
@@ -162,7 +176,7 @@ function generateProfileVector(interactions, items) {
 
 /**
  * Update a user's profile vector in the database
- * @param {number} userId - The user's ID
+ * @param {string} userId - The user's ID
  * @param {Array<number>} profileVector - The computed profile vector
  */
 async function updateUserProfileVector(userId, profileVector) {
@@ -177,7 +191,7 @@ async function updateUserProfileVector(userId, profileVector) {
     const { error } = await supabase
         .from('users')
         .update({ profile_vector: cleanVector })
-        .eq('id', userId);
+        .eq('user_id', userId);
 
     if (error) {
         console.error("Error updating user profile vector:", error.message);
@@ -197,7 +211,7 @@ async function updateUserEmbedding(username) {
     // 1. Fetch the user details from the users table (including existing profile_vector)
     const { data: users, error } = await supabase
         .from('users')
-        .select('id, username, profile_vector')
+        .select('user_id, username, profile_vector')
         .eq('username', username)
         .limit(1);
 
@@ -207,7 +221,7 @@ async function updateUserEmbedding(username) {
     }
 
     const user = users[0];
-    console.log(`Found user: ${user.username} (id: ${user.id})`);
+    console.log(`Found user: ${user.username} (id: ${user.user_id})`);
 
     // Parse existing profile_vector (handle vector type from DB)
     let existingVector = null;
@@ -224,7 +238,7 @@ async function updateUserEmbedding(username) {
     }
 
     // 2. Get user's interactions
-    const interactions = await getUserInteractions(user.id);
+    const interactions = await getUserInteractions(user.user_id);
     if (interactions.length === 0) {
         console.log("No interactions found for this user");
         return;
@@ -261,7 +275,7 @@ async function updateUserEmbedding(username) {
     }
 
     // 7. Update user's profile in database
-    await updateUserProfileVector(user.id, finalVector);
+    await updateUserProfileVector(user.user_id, finalVector);
 
     console.log(`=== Completed processing ${username} ===\n`);
 }
@@ -273,7 +287,7 @@ async function updateAllUserEmbeddings() {
     // Get all users
     const { data: users, error } = await supabase
         .from('users')
-        .select('id, username');
+        .select('user_id, username');
 
     if (error || !users) {
         console.error("Error fetching users:", error);

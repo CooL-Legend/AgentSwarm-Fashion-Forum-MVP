@@ -36,73 +36,70 @@ function extractWrognTitle(description) {
     return description.substring(0, 50); // fallback
 }
 
-async function main() {
-    // Ensure user 1 exists
-    const { error: userError } = await supabase
-        .from('users')
-        .upsert([{ id: 1, username: 'system_user' }]);
-    if (userError) {
-        console.error("Error ensuring user 1 exists:", userError.message);
-        return;
-    }
+function parsePrice(value) {
+    if (!value) return null;
 
+    const numericValue = Number(String(value).replace(/[^0-9.]/g, ''));
+    return Number.isFinite(numericValue) ? numericValue : null;
+}
+
+async function main() {
     console.log("Parsing HMData.csv...");
-    const hmItems = await processCSV(hmCsvPath, (row) => ({
-        author_id: 1, // Default user
-        item_type: 'PRODUCT',
+    const hmProducts = await processCSV(hmCsvPath, (row) => ({
         title: row['b8e2ea'] || 'H&M Product',
-        body_text: `Price: ${row['c166ec'] || 'Unknown'}`,
-        tags: ['HM', 'Garment'],
-        media_url: row['ecac7b src'] || null,
+        brand: 'H&M',
+        price: parsePrice(row['c166ec']),
+        category: 'Garment',
+        product_type: 'PRODUCT',
+        image_url: row['ecac7b src'] || null,
     }));
 
     console.log("Parsing westside.csv...");
-    const westsideItems = await processCSV(westsideCsvPath, (row) => ({
-        author_id: 1,
-        item_type: 'PRODUCT',
+    const westsideProducts = await processCSV(westsideCsvPath, (row) => ({
         title: row['product-item-title'] || 'Westside Product',
-        body_text: `Price: ${row['wizzy-product-item-price'] || 'Unknown'}`,
-        tags: ['Westside', 'Garment'],
-        media_url: row['product-item-image src'] || null,
+        brand: 'Westside',
+        price: parsePrice(row['wizzy-product-item-price']),
+        category: 'Garment',
+        product_type: 'PRODUCT',
+        image_url: row['product-item-image src'] || null,
     }));
 
     console.log("Parsing wrogn_data.csv...");
-    const wrognItems = await processCSV(wrognCsvPath, (row) => {
+    const wrognProducts = await processCSV(wrognCsvPath, (row) => {
         const imageUrls = row['image_urls'] ? row['image_urls'].split(';') : [];
-        const mediaUrl = imageUrls.length > 0 ? imageUrls[0] : null;
+        const imageUrl = imageUrls.length > 0 ? imageUrls[0] : null;
         return {
-            author_id: 1,
-            item_type: 'PRODUCT',
             title: extractWrognTitle(row['description'] || 'Wrogn Product'),
-            body_text: row['description'] || '',
-            tags: ['Wrogn', 'Garment'],
-            media_url: mediaUrl,
+            brand: 'WROGN',
+            category: 'Garment',
+            product_type: 'PRODUCT',
+            image_url: imageUrl,
         };
     });
 
-    const allItems = [...hmItems, ...westsideItems, ...wrognItems].filter(i => i.media_url);
-    console.log(`Total parsed and filtered items to insert: ${allItems.length}`);
+    const allProducts = [...hmProducts, ...westsideProducts, ...wrognProducts].filter((product) => product.image_url);
+    console.log(`Total parsed and filtered products to insert: ${allProducts.length}`);
 
-    if (allItems.length === 0) {
-        console.log("No valid items to insert.");
+    if (allProducts.length === 0) {
+        console.log("No valid products to insert.");
         return;
     }
 
     // Insert in batches of 100 to avoid request size limits if needed
     const batchSize = 100;
-    for (let i = 0; i < allItems.length; i += batchSize) {
-        const batch = allItems.slice(i, i + batchSize);
-        console.log(`Inserting batch ${i / batchSize + 1}... (${batch.length} items)`);
+    for (let i = 0; i < allProducts.length; i += batchSize) {
+        const batch = allProducts.slice(i, i + batchSize);
+        console.log(`Inserting batch ${i / batchSize + 1}... (${batch.length} products)`);
 
         const { data: insertedData, error } = await supabase
-            .from('items')
+            .from('products')
             .insert(batch)
             .select();
 
         if (error) {
-            console.error("Error inserting items batch:", error.message, error.details);
+            console.error("Error inserting products batch:", error.message, error.details);
         } else {
-            console.log(`Successfully inserted ${insertedData.length} items in this batch.`);
+            console.log(`Successfully inserted ${insertedData.length} products in this batch.`);
         }
     }
 

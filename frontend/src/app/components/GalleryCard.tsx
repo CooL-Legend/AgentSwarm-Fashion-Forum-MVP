@@ -8,6 +8,9 @@ export interface GalleryImage {
     image_url: string;
     title?: string;
     description?: string;
+    brand?: string;
+    price?: number | string;
+    product_url?: string;
     category?: string;
     created_at?: string;
     likeCount?: number;
@@ -17,7 +20,7 @@ interface Props {
     image: GalleryImage;
     index: number;
     onClick: () => void;
-    userId: number | null;
+    userId: string | null;
 }
 
 export default function GalleryCard({ image, index, onClick, userId }: Props) {
@@ -39,20 +42,19 @@ export default function GalleryCard({ image, index, onClick, userId }: Props) {
                     .delete()
                     .match({ 
                         user_id: userId, 
-                        item_id: image.id
+                        item_id: String(image.id),
+                        type: "LIKE"
                     });
                 setLiked(false);
                 setLikeCount(likeCount - 1);
             } else {
-                // Like - insert new interaction with weight (Image Likes = 1.0)
                 const { error } = await supabase
                     .from("interactions")
                     .insert({
                         user_id: userId,
-                        item_id: image.id,
-                        interaction_type: "LIKE",
-                        weight: 1.0,
-                        created_at: new Date().toISOString(),
+                        item_id: String(image.id),
+                        item_type: "PRODUCT",
+                        type: "LIKE",
                     });
 
                 if (!error) {
@@ -96,6 +98,13 @@ export default function GalleryCard({ image, index, onClick, userId }: Props) {
                 {image.title && (
                     <p className="truncate text-sm font-semibold text-white drop-shadow-md">
                         {image.title}
+                    </p>
+                )}
+                {(image.brand || image.price) && (
+                    <p className="mt-1 truncate text-xs text-zinc-300/90">
+                        {[image.brand, image.price ? `₹${image.price}` : null]
+                            .filter(Boolean)
+                            .join(" • ")}
                     </p>
                 )}
                 {image.category && (

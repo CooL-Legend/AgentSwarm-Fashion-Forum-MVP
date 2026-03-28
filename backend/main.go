@@ -13,6 +13,8 @@ func main() {
 	if err := initDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
+	startPersistenceWorker()
+	defer stopPersistenceWorker()
 
 	r := gin.Default()
 
@@ -76,7 +78,6 @@ func registerUser(c *gin.Context) {
 	}
 
 	dbMutex.Lock()
-	defer dbMutex.Unlock()
 
 	user := User{
 		ID:           db.NextID.Users,
@@ -86,40 +87,43 @@ func registerUser(c *gin.Context) {
 	}
 	db.Users = append(db.Users, user)
 	db.NextID.Users++
+	dbMutex.Unlock()
 
-	if err := saveDB(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save user"})
-		return
-	}
+	requestPersist()
 
 	c.JSON(http.StatusCreated, user)
 }
 
 func getUsers(c *gin.Context) {
 	dbMutex.RLock()
-	defer dbMutex.RUnlock()
+	users := append([]User(nil), db.Users...)
+	dbMutex.RUnlock()
 
-	c.JSON(http.StatusOK, db.Users)
+	c.JSON(http.StatusOK, users)
 }
 
 // Posts
 func getPosts(c *gin.Context) {
-	dbMutex.RLock()
-	defer dbMutex.RUnlock()
-
 	// Optionally filter by category if provided as query param
 	category := c.Query("category")
 
+	dbMutex.RLock()
 	var result []Post
-	if category != "" {
-		for _, p := range db.Posts {
-			if p.Category == category {
-				result = append(result, p)
-			}
-		}
-	} else {
-		result = db.Posts
+	if category == "" {
+		result = append([]Post(nil), db.Posts...)
+		dbMutex.RUnlock()
+		c.JSON(http.StatusOK, result)
+		return
 	}
+
+	indexes := postIndexesByCategory[category]
+	result = make([]Post, 0, len(indexes))
+	for _, idx := range indexes {
+		if idx >= 0 && idx < len(db.Posts) {
+			result = append(result, db.Posts[idx])
+		}
+	}
+	dbMutex.RUnlock()
 
 	c.JSON(http.StatusOK, result)
 }
@@ -139,7 +143,6 @@ func createPost(c *gin.Context) {
 	}
 
 	dbMutex.Lock()
-	defer dbMutex.Unlock()
 
 	post := Post{
 		ID:        db.NextID.Posts,
@@ -150,13 +153,13 @@ func createPost(c *gin.Context) {
 		Category:  req.Category,
 		ImageURL:  req.ImageURL,
 	}
+	postIdx := len(db.Posts)
 	db.Posts = append(db.Posts, post)
+	indexPost(post, postIdx)
 	db.NextID.Posts++
+	dbMutex.Unlock()
 
-	if err := saveDB(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save post"})
-		return
-	}
+	requestPersist()
 
 	c.JSON(http.StatusCreated, post)
 }
@@ -170,14 +173,14 @@ func getPostByID(c *gin.Context) {
 	}
 
 	dbMutex.RLock()
-	defer dbMutex.RUnlock()
-
-	for _, p := range db.Posts {
-		if p.ID == id {
-			c.JSON(http.StatusOK, p)
-			return
-		}
+	idx, ok := postIndexByID[id]
+	if ok && idx >= 0 && idx < len(db.Posts) {
+		post := db.Posts[idx]
+		dbMutex.RUnlock()
+		c.JSON(http.StatusOK, post)
+		return
 	}
+	dbMutex.RUnlock()
 
 	c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
 }
@@ -187,25 +190,28 @@ func getComments(c *gin.Context) {
 	postIDStr := c.Query("postId")
 
 	dbMutex.RLock()
-	defer dbMutex.RUnlock()
-
 	if postIDStr == "" {
-		c.JSON(http.StatusOK, db.Comments)
+		comments := append([]Comment(nil), db.Comments...)
+		dbMutex.RUnlock()
+		c.JSON(http.StatusOK, comments)
 		return
 	}
 
 	postID, err := strconv.Atoi(postIDStr)
 	if err != nil {
+		dbMutex.RUnlock()
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid postId"})
 		return
 	}
 
-	var result []Comment
-	for _, comment := range db.Comments {
-		if comment.PostID == postID {
-			result = append(result, comment)
+	indexes := commentIndexesByPost[postID]
+	result := make([]Comment, 0, len(indexes))
+	for _, idx := range indexes {
+		if idx >= 0 && idx < len(db.Comments) {
+			result = append(result, db.Comments[idx])
 		}
 	}
+	dbMutex.RUnlock()
 
 	c.JSON(http.StatusOK, result)
 }
@@ -223,7 +229,6 @@ func createComment(c *gin.Context) {
 	}
 
 	dbMutex.Lock()
-	defer dbMutex.Unlock()
 
 	comment := Comment{
 		ID:        db.NextID.Comments,
@@ -232,13 +237,13 @@ func createComment(c *gin.Context) {
 		Content:   req.Content,
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 	}
+	commentIdx := len(db.Comments)
 	db.Comments = append(db.Comments, comment)
+	indexComment(comment, commentIdx)
 	db.NextID.Comments++
+	dbMutex.Unlock()
 
-	if err := saveDB(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save comment"})
-		return
-	}
+	requestPersist()
 
 	c.JSON(http.StatusCreated, comment)
 }
@@ -285,7 +290,6 @@ func addInteraction(c *gin.Context) {
 	}
 
 	dbMutex.Lock()
-	defer dbMutex.Unlock()
 
 	interaction := Interaction{
 		ID:        db.NextID.Interactions,
@@ -298,11 +302,9 @@ func addInteraction(c *gin.Context) {
 	}
 	db.Interactions = append(db.Interactions, interaction)
 	db.NextID.Interactions++
+	dbMutex.Unlock()
 
-	if err := saveDB(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save interaction"})
-		return
-	}
+	requestPersist()
 
 	c.JSON(http.StatusCreated, interaction)
 }

@@ -7,7 +7,7 @@ import { supabase } from "@/lib/supabase";
 interface Props {
     image: GalleryImage;
     onClose: () => void;
-    userId: number | null;
+    userId: string | null;
 }
 
 export default function GalleryLightbox({ image, onClose, userId }: Props) {
@@ -28,19 +28,11 @@ export default function GalleryLightbox({ image, onClose, userId }: Props) {
             
             // Only track if viewed for at least 1 second
             if (viewDuration >= 1) {
-                // Calculate weight based on view duration
-                // Image Views: 0.2 to 0.5 (longer views = higher weight)
-                let weight = 0.2;
-                if (viewDuration >= 2.0) weight = 0.35;
-                if (viewDuration >= 5.0) weight = 0.45;
-                if (viewDuration >= 10.0) weight = 0.5; // Higher interest for longer views
-                
                 supabase.from("interactions").insert({
                     user_id: userId,
-                    item_id: image.id,
-                    interaction_type: "VIEW",
-                    weight: weight,
-                    created_at: new Date().toISOString(),
+                    item_id: String(image.id),
+                    item_type: "PRODUCT",
+                    type: "VIEW",
                 }).then(({ error }) => {
                     if (error) console.error("Failed to track view:", error);
                 });
@@ -116,6 +108,13 @@ export default function GalleryLightbox({ image, onClose, userId }: Props) {
                                     {image.title}
                                 </h2>
                             )}
+                            {(image.brand || image.price) && (
+                                <p className="mt-1 text-sm text-zinc-300">
+                                    {[image.brand, image.price ? `₹${image.price}` : null]
+                                        .filter(Boolean)
+                                        .join(" • ")}
+                                </p>
+                            )}
                             {image.description && (
                                 <p className="mt-1 text-sm leading-relaxed text-zinc-400">
                                     {image.description}
@@ -136,6 +135,16 @@ export default function GalleryLightbox({ image, onClose, userId }: Props) {
                                 day: "numeric",
                             })}
                         </p>
+                    )}
+                    {image.product_url && (
+                        <a
+                            href={image.product_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-3 inline-flex text-xs font-medium text-amber-400 transition-colors hover:text-amber-300"
+                        >
+                            View product
+                        </a>
                     )}
                 </div>
             </div>
