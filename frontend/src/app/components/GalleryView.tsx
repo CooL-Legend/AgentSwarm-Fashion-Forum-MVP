@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { type GalleryImage } from "./GalleryCard";
 import GalleryLightbox from "./GalleryLightbox";
+import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 
 const SKELETON_CARD_HEIGHTS = [220, 280, 260, 320, 240, 300];
 
@@ -13,6 +14,7 @@ export default function GalleryView() {
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
+    const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
 
     // ── Fetch product images from Supabase `products` table ─────
     useEffect(() => {
@@ -74,35 +76,38 @@ export default function GalleryView() {
                             </span>
                         </h1>
                         <p className="mt-2 max-w-xl text-sm text-zinc-400">
-                            Image-only view powered directly by the Supabase products table.
+                            Search locally, upload an image, or paste a link to find your garment.
                         </p>
                     </div>
 
-                    {/* Center search bar */}
-                    <div className="mx-auto my-6 w-full max-w-2xl">
-                        <div className="relative">
-                            <svg
-                                className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500"
-                                fill="none"
-                                viewBox="0 0 24 24"
-                                stroke="currentColor"
-                                strokeWidth={2}
-                            >
-                                <path
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-                                />
-                            </svg>
-                            <input
-                                type="text"
-                                placeholder="Search images by title..."
-                                value={search}
-                                onChange={(e) => setSearch(e.target.value)}
-                                className="w-full rounded-2xl border border-zinc-700/80 bg-zinc-950/90 py-3 pl-11 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/20"
-                            />
-                        </div>
+                    {/* Garment Input: Local Search / Upload / Link */}
+                    <div className="my-6">
+                        <GarmentInput
+                            search={search}
+                            onSearchChange={setSearch}
+                            onGarmentSelect={setGarmentSelection}
+                        />
                     </div>
+
+                    {/* Selected garment banner */}
+                    {garmentSelection && garmentSelection.imageUrl && garmentSelection.mode !== "local" && (
+                        <div className="mx-auto mb-2 flex max-w-2xl items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2">
+                            <img
+                                src={garmentSelection.imageUrl}
+                                alt="Selected garment"
+                                className="h-10 w-10 rounded-lg object-cover"
+                            />
+                            <p className="flex-1 text-xs text-amber-300/80">
+                                Garment selected via {garmentSelection.mode === "upload" ? "upload" : "link"}
+                            </p>
+                            <button
+                                onClick={() => setGarmentSelection(null)}
+                                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                            >
+                                Clear
+                            </button>
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -184,21 +189,50 @@ export default function GalleryView() {
             {/* ── Image Grid ─────────────────────────────────────── */}
             {!loading && !error && filtered.length > 0 && (
                 <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
-                    {filtered.map((img, i) => (
-                        <button
-                            type="button"
-                            key={img.id}
-                            onClick={() => setLightbox(img)}
-                            className="group mb-4 block w-full break-inside-avoid overflow-hidden rounded-2xl border border-zinc-800/70 bg-zinc-900/80 transition-all duration-300 hover:border-zinc-700"
-                        >
-                            <img
-                                src={img.image_url}
-                                alt={img.title || `Product image ${i + 1}`}
-                                loading="lazy"
-                                className="w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
-                            />
-                        </button>
-                    ))}
+                    {filtered.map((img, i) => {
+                        const isSelected = garmentSelection?.mode === "local" && garmentSelection.localProduct?.id === img.id;
+                        return (
+                            <button
+                                type="button"
+                                key={img.id}
+                                onClick={() => {
+                                    setGarmentSelection({
+                                        mode: "local",
+                                        imageUrl: img.image_url,
+                                        localProduct: { id: img.id, title: img.title, image_url: img.image_url },
+                                    });
+                                }}
+                                onDoubleClick={() => setLightbox(img)}
+                                className={`group relative mb-4 block w-full break-inside-avoid overflow-hidden rounded-2xl border transition-all duration-300 ${
+                                    isSelected
+                                        ? "border-amber-400/60 ring-2 ring-amber-400/30"
+                                        : "border-zinc-800/70 hover:border-zinc-700"
+                                } bg-zinc-900/80`}
+                            >
+                                <img
+                                    src={img.image_url}
+                                    alt={img.title || `Product image ${i + 1}`}
+                                    loading="lazy"
+                                    className="w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
+                                />
+                                {/* Hover overlay */}
+                                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/70 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                                    <span className="truncate text-xs font-medium text-white">{img.title}</span>
+                                    <span className="shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                                        {isSelected ? "Selected" : "Select"}
+                                    </span>
+                                </div>
+                                {/* Selected check */}
+                                {isSelected && (
+                                    <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-black">
+                                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                    </div>
+                                )}
+                            </button>
+                        );
+                    })}
                 </div>
             )}
 
