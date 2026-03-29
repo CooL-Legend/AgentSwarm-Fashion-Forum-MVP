@@ -3,7 +3,18 @@
     "allow": [
       "Bash(curl -s -X POST http://127.0.0.1:8000/api/scrape -H \"Content-Type: application/json\" -d '{\"\"\"\"url\"\"\"\":\"\"\"\"https://www.adidas.co.in/mercedes---amg-petronas-formula-1-team-dna-graphic-tee/KE8163.html\"\"\"\",\"\"\"\"max_images\"\"\"\":3}')",
       "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\(f''''Count: {d[\"\"count\"\"]}''''\\);[print\\(f''''  [{i+1}] {img[\"\"src\"\"][-60:]}''''\\) for i,img in enumerate\\(d[''''images'''']\\)]\")",
-      "Bash(curl -s -X POST http://localhost:3000/api/tryon -H \"Content-Type: application/json\" -d '{\"\"\"\"person_image\"\"\"\":\"\"\"\"dGVzdA==\"\"\"\",\"\"\"\"cloth_image_url\"\"\"\":\"\"\"\"https://example.com/test.jpg\"\"\"\"}')"
+      "Bash(curl -s -X POST http://localhost:3000/api/tryon -H \"Content-Type: application/json\" -d '{\"\"\"\"person_image\"\"\"\":\"\"\"\"dGVzdA==\"\"\"\",\"\"\"\"cloth_image_url\"\"\"\":\"\"\"\"https://example.com/test.jpg\"\"\"\"}')",
+      "Bash(ln -s ../.env /Users/varuntyagi/Downloads/Agent_Swarm/frontend/.env)",
+      "Bash(ln -s ../.env /Users/varuntyagi/Downloads/Agent_Swarm/backend/.env)",
+      "Bash(node -e \":*)",
+      "Bash(ln -sf ../.env /Users/varuntyagi/Downloads/Agent_Swarm/frontend/.env)",
+      "Bash(curl -s --max-time 30 -X POST \"https://varun2808-product-image-scraper.hf.space/api/scrape\" -H \"Content-Type: application/json\" -d '{\"\"url\"\": \"\"https://www.myntra.com/tshirts/roadster/roadster-men-tshirt/12345\"\", \"\"max_images\"\": 5}' -w \"\\\\nHTTP_CODE:%{http_code}\")",
+      "Bash(curl -s --max-time 30 -X POST \"https://varun2808-product-image-scraper.hf.space/api/scrape\" -H \"Content-Type: application/json\" -d '{\"\"url\"\": \"\"https://www.adidas.co.in/mercedes---amg-petronas-formula-1-team-dna-graphic-tee/KE8163.html\"\", \"\"max_images\"\": 10}')",
+      "Bash(ls -d /Users/varuntyagi/Downloads/Agent_Swarm/venv /Users/varuntyagi/Downloads/Agent_Swarm/backend/venv /Users/varuntyagi/Downloads/Agent_Swarm/**/venv /Users/varuntyagi/Downloads/Agent_Swarm/node_modules /Users/varuntyagi/Downloads/Agent_Swarm/frontend/node_modules /Users/varuntyagi/Downloads/Agent_Swarm/frontend/.next /Users/varuntyagi/Downloads/Agent_Swarm/hf-scraper-space)",
+      "Bash(git -C /Users/varuntyagi/Downloads/Agent_Swarm ls-files --cached backend/scraper/venv hf-scraper-space)",
+      "Bash(git stash:*)",
+      "Bash(git commit:*)",
+      "Bash(npx vercel:*)"
     ]
   }
 }

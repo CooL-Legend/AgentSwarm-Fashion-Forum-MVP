@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const SCRAPER_URL = process.env.FASTAPI_BASE_URL || "http://127.0.0.1:8000";
+const SCRAPER_URL = process.env.SCRAPER_URL || "https://varun2808-product-image-scraper.hf.space";
 
 export const maxDuration = 60; // Allow up to 60s for serverless functions
 
