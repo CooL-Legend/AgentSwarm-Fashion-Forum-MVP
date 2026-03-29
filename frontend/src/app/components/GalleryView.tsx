@@ -5,6 +5,7 @@ import { supabase } from "@/lib/supabase";
 import { type GalleryImage } from "./GalleryCard";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
+import TryOnModal from "./TryOnModal";
 
 const SKELETON_CARD_HEIGHTS = [220, 280, 260, 320, 240, 300];
 
@@ -15,6 +16,7 @@ export default function GalleryView() {
     const [search, setSearch] = useState("");
     const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
+    const [tryOnImage, setTryOnImage] = useState<string | null>(null);
 
     // ── Fetch product images from Supabase `products` table ─────
     useEffect(() => {
@@ -89,20 +91,29 @@ export default function GalleryView() {
                         />
                     </div>
 
-                    {/* Selected garment banner */}
-                    {garmentSelection && garmentSelection.imageUrl && garmentSelection.mode !== "local" && (
-                        <div className="mx-auto mb-2 flex max-w-2xl items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2">
+                    {/* Selected garment banner with Try On button */}
+                    {garmentSelection && garmentSelection.imageUrl && (
+                        <div className="mx-auto mb-2 flex max-w-2xl items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
                             <img
                                 src={garmentSelection.imageUrl}
                                 alt="Selected garment"
-                                className="h-10 w-10 rounded-lg object-cover"
+                                className="h-12 w-12 rounded-lg object-cover"
                             />
-                            <p className="flex-1 text-xs text-amber-300/80">
-                                Garment selected via {garmentSelection.mode === "upload" ? "upload" : "link"}
-                            </p>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-xs font-medium text-amber-300/90 truncate">
+                                    {garmentSelection.localProduct?.title || `Garment via ${garmentSelection.mode}`}
+                                </p>
+                                <p className="text-[10px] text-zinc-500">Click &quot;Try On&quot; to see it on you</p>
+                            </div>
+                            <button
+                                onClick={() => setTryOnImage(garmentSelection.imageUrl!)}
+                                className="shrink-0 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-amber-400"
+                            >
+                                Try On
+                            </button>
                             <button
                                 onClick={() => setGarmentSelection(null)}
-                                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                                className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
                             >
                                 Clear
                             </button>
@@ -222,6 +233,18 @@ export default function GalleryView() {
                                         {isSelected ? "Selected" : "Select"}
                                     </span>
                                 </div>
+                                {/* Try On shortcut */}
+                                <div
+                                    className="pointer-events-auto absolute left-2 top-2 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                                    onClick={(e) => { e.stopPropagation(); setTryOnImage(img.image_url); }}
+                                >
+                                    <span className="flex items-center gap-1 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold text-black shadow-lg cursor-pointer hover:bg-amber-400 transition-colors">
+                                        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0" />
+                                        </svg>
+                                        Try On
+                                    </span>
+                                </div>
                                 {/* Selected check */}
                                 {isSelected && (
                                     <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-black">
@@ -250,6 +273,14 @@ export default function GalleryView() {
                     image={lightbox}
                     onClose={() => setLightbox(null)}
                     userId={null}
+                />
+            )}
+
+            {/* ── Try-On Modal ──────────────────────────────────── */}
+            {tryOnImage && (
+                <TryOnModal
+                    garmentImageUrl={tryOnImage}
+                    onClose={() => setTryOnImage(null)}
                 />
             )}
         </div>

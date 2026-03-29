@@ -107,7 +107,7 @@ export default function GarmentInput({ search, onSearchChange, onGarmentSelect }
             const resp = await fetch("/api/scrape", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url: linkUrl, max_images: 20 }),
+                body: JSON.stringify({ url: linkUrl, max_images: 3 }),
             });
 
             if (!resp.ok) {
@@ -328,45 +328,54 @@ export default function GarmentInput({ search, onSearchChange, onGarmentSelect }
                             </div>
                         )}
 
-                        {/* Scraped images picker */}
+                        {/* Scraped images — 3 large cards */}
                         {scrapedImages.length > 0 && (
-                            <div className="mt-3">
-                                <div className="mb-2 flex items-center justify-between">
-                                    <p className="text-xs text-zinc-400">
-                                        Found {scrapedImages.length} images
+                            <div className="mt-4">
+                                <div className="mb-3 flex items-center justify-between">
+                                    <p className="text-sm font-medium text-zinc-300">
+                                        Select a garment image
                                         {scrapedSite && scrapedSite !== "generic" && (
-                                            <span className="ml-1 text-amber-400/70">
-                                                from {scrapedSite}
+                                            <span className="ml-1.5 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-amber-400">
+                                                {scrapedSite}
                                             </span>
                                         )}
-                                        {" "}&mdash; click to select
                                     </p>
                                     <button
                                         onClick={() => setScrapedImages([])}
                                         className="text-xs text-zinc-600 hover:text-zinc-400 transition-colors"
                                     >
-                                        Dismiss
+                                        Clear
                                     </button>
                                 </div>
-                                <div className="grid grid-cols-4 gap-2 max-h-[240px] overflow-y-auto rounded-xl border border-zinc-800/60 bg-zinc-950/80 p-2">
-                                    {scrapedImages.map((img, i) => (
+                                <div className="grid grid-cols-3 gap-3">
+                                    {scrapedImages.slice(0, 3).map((img, i) => (
                                         <button
                                             key={i}
                                             onClick={() => selectScrapedImage(img)}
-                                            className="group relative aspect-square overflow-hidden rounded-lg border border-zinc-800/60 bg-zinc-900 transition-all hover:border-amber-500/40 hover:ring-1 hover:ring-amber-500/20"
+                                            className="group relative overflow-hidden rounded-2xl border-2 border-zinc-800/60 bg-zinc-900 transition-all duration-300 hover:border-amber-400/50 hover:shadow-[0_0_25px_rgba(245,158,11,0.12)] focus:outline-none focus:ring-2 focus:ring-amber-400/40"
                                         >
-                                            <img
-                                                src={img.src}
-                                                alt={img.alt || `Product ${i + 1}`}
-                                                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
-                                                onError={(e) => {
-                                                    (e.target as HTMLImageElement).parentElement!.style.display = "none";
-                                                }}
-                                            />
-                                            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/50 to-transparent opacity-0 transition-opacity group-hover:opacity-100" />
-                                            <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-zinc-400 opacity-0 transition-opacity group-hover:opacity-100">
-                                                Select
-                                            </span>
+                                            <div className="aspect-[3/4] overflow-hidden">
+                                                <img
+                                                    src={img.src}
+                                                    alt={img.alt || `Product ${i + 1}`}
+                                                    className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+                                                    onError={(e) => {
+                                                        (e.target as HTMLImageElement).closest("button")!.style.display = "none";
+                                                    }}
+                                                />
+                                            </div>
+                                            {/* Hover overlay */}
+                                            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/70 via-transparent to-transparent opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
+                                            {/* Select badge */}
+                                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-center p-3 opacity-0 transition-all duration-300 group-hover:opacity-100">
+                                                <span className="rounded-full bg-amber-500 px-4 py-1.5 text-xs font-semibold text-black shadow-lg">
+                                                    Select
+                                                </span>
+                                            </div>
+                                            {/* Image number */}
+                                            <div className="absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-[10px] font-bold text-white backdrop-blur-sm">
+                                                {i + 1}
+                                            </div>
                                         </button>
                                     ))}
                                 </div>
