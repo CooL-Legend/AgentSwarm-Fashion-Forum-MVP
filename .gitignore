@@ -56,3 +56,11 @@ Thumbs.db
 
 # TypeScript
 *.tsbuildinfo
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Misc
+hf-scraper-space/

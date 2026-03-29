@@ -15,26 +15,48 @@ export default function GalleryView() {
     const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
 
     // ── Fetch product images from Supabase `products` table ─────
+    // Load 500 men + 500 women, shuffled together
     useEffect(() => {
         async function fetchImages() {
             setLoading(true);
             setError(null);
             try {
-                const { data, error: sbError } = await supabase
-                    .from("products")
-                    .select("id, image_url, title, created_at")
-                    .not("image_url", "is", null)
-                    .order("created_at", { ascending: false });
+                const [menRes, womenRes] = await Promise.all([
+                    supabase
+                        .from("products")
+                        .select("id, image_url, title, brand, price, category, gender, created_at")
+                        .eq("gender", "Men")
+                        .not("image_url", "is", null)
+                        .order("created_at", { ascending: false })
+                        .limit(500),
+                    supabase
+                        .from("products")
+                        .select("id, image_url, title, brand, price, category, gender, created_at")
+                        .eq("gender", "Women")
+                        .not("image_url", "is", null)
+                        .order("created_at", { ascending: false })
+                        .limit(500),
+                ]);
 
-                if (sbError) throw sbError;
+                if (menRes.error) throw menRes.error;
+                if (womenRes.error) throw womenRes.error;
 
-                const mapped: GalleryImage[] =
-                    (data ?? []).map((product: any) => ({
-                        id: product.id,
-                        image_url: product.image_url,
-                        title: product.title,
-                        created_at: product.created_at,
-                    })) ?? [];
+                const all = [...(menRes.data ?? []), ...(womenRes.data ?? [])];
+                // Shuffle so men and women are interleaved
+                for (let i = all.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [all[i], all[j]] = [all[j], all[i]];
+                }
+
+                const mapped: GalleryImage[] = all.map((product: any) => ({
+                    id: product.id,
+                    image_url: product.image_url,
+                    title: product.title,
+                    brand: product.brand,
+                    price: product.price,
+                    category: product.category,
+                    created_at: product.created_at,
+                }));
 
                 setImages(mapped);
             } catch (err: unknown) {
