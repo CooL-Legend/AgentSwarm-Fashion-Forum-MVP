@@ -12,7 +12,9 @@
       "Bash(curl -s --max-time 30 -X POST \"https://varun2808-product-image-scraper.hf.space/api/scrape\" -H \"Content-Type: application/json\" -d '{\"\"url\"\": \"\"https://www.adidas.co.in/mercedes---amg-petronas-formula-1-team-dna-graphic-tee/KE8163.html\"\", \"\"max_images\"\": 10}')",
       "Bash(ls -d /Users/varuntyagi/Downloads/Agent_Swarm/venv /Users/varuntyagi/Downloads/Agent_Swarm/backend/venv /Users/varuntyagi/Downloads/Agent_Swarm/**/venv /Users/varuntyagi/Downloads/Agent_Swarm/node_modules /Users/varuntyagi/Downloads/Agent_Swarm/frontend/node_modules /Users/varuntyagi/Downloads/Agent_Swarm/frontend/.next /Users/varuntyagi/Downloads/Agent_Swarm/hf-scraper-space)",
       "Bash(git -C /Users/varuntyagi/Downloads/Agent_Swarm ls-files --cached backend/scraper/venv hf-scraper-space)",
-      "Bash(git stash:*)"
+      "Bash(git stash:*)",
+      "Bash(git commit:*)",
+      "Bash(npx vercel:*)"
     ]
   }
 }
