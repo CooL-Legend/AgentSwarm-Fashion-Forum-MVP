@@ -1,4 +1,9 @@
 import type { NextConfig } from "next";
+import path from "path";
+import dotenv from "dotenv";
+
+// Load shared repo-level env so frontend can run from ./frontend while using ../.env.
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const nextConfig: NextConfig = {
     turbopack: {

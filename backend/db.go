@@ -78,6 +78,8 @@ var (
 const persistDebounce = 300 * time.Millisecond
 
 func initDB() error {
+	dataFilePath = getenv("BACKEND_DATA_FILE", dataFilePath)
+
 	file, err := os.ReadFile(dataFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {

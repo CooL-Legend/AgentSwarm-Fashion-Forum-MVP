@@ -1,5 +1,6 @@
 // generate_vectors.js
-require('dotenv').config({ path: '../frontend/.env.local' });
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const { createClient } = require('@supabase/supabase-js');
 const axios = require('axios');
@@ -9,6 +10,10 @@ const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 // TODO: for production, prefer a Service Role key with RLS policies configured.
 const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const HF_API_URL = 'https://CooLLegend-fashion-recommendation-api.hf.space' // Your running Hugging Face App URL
+
+if (!SUPABASE_URL || !SUPABASE_KEY) {
+  throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in ../.env");
+}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 

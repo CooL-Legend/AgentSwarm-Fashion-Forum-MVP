@@ -10,6 +10,10 @@ import (
 )
 
 func main() {
+	if err := loadEnv(); err != nil {
+		log.Printf("Warning: unable to load .env file: %v", err)
+	}
+
 	if err := initDB(); err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
@@ -57,7 +61,8 @@ func main() {
 		api.POST("/interact", addInteraction)
 	}
 
-	if err := r.Run(":8080"); err != nil {
+	port := getenv("BACKEND_PORT", "8080")
+	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

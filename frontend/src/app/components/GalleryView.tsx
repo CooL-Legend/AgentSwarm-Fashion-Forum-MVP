@@ -160,7 +160,7 @@ export default function GalleryView() {
                     </p>
                     <p className="mt-1 max-w-sm text-xs text-zinc-500">{error}</p>
                     <p className="mt-3 text-xs text-zinc-600">
-                        Make sure your <code className="text-zinc-400">.env.local</code>{" "}
+                        Make sure your <code className="text-zinc-400">.env</code>{" "}
                         has valid Supabase credentials and the{" "}
                         <code className="text-zinc-400">products</code> table exists.
                     </p>

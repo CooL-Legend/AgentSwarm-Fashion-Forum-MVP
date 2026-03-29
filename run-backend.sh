@@ -3,4 +3,4 @@
 
 echo "Starting the Go backend..."
 cd backend
-go run main.go db.go
+go run .

@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
+import { backendApiUrl, backendApiUrlWithQuery } from '@/lib/backend';
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
-    const res = await fetch(`http://localhost:8080/api/comments?${searchParams.toString()}`, { cache: 'no-store' });
+    const res = await fetch(backendApiUrlWithQuery('/api/comments', searchParams), { cache: 'no-store' });
     const data = await res.json();
     return NextResponse.json(data, { status: res.status });
   } catch (error) {
@@ -15,7 +16,7 @@ export async function GET(req: Request) {
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const res = await fetch('http://localhost:8080/api/comments', {
+    const res = await fetch(backendApiUrl('/api/comments'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

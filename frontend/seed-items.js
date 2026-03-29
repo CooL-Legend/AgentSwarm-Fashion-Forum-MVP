@@ -2,8 +2,14 @@ const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 const path = require('path');
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://tndgscjywjmmllkbyexj.supabase.co';
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_d7ST6jgUBqL3tWqGp-ze3g_4bXcPXdk';
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+    throw new Error('Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in ../.env');
+}
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
