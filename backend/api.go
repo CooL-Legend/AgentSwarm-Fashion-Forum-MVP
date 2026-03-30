@@ -12,11 +12,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,12 @@ import (
 const (
 	defaultProductsLimit = 100
 	maxProductsLimit     = 200
+)
+
+var (
+	metaImageRegex = regexp.MustCompile(`(?is)<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image|og:image:secure_url|twitter:image)["'][^>]*content\s*=\s*["']([^"']+)["']`)
+	imgSrcRegex    = regexp.MustCompile(`(?is)<img[^>]+(?:src|data-src|data-original)\s*=\s*["']([^"']+)["'][^>]*`)
+	imageURLRegex  = regexp.MustCompile(`(?i)\.(?:jpg|jpeg|png|webp|avif|gif)(?:\?|$)|/images?/|/products?/|cdn|media`)
 )
 
 type configError struct {
@@ -301,16 +309,203 @@ func scrapeHandler(cfg AppConfig) http.HandlerFunc {
 		resp, err := (&http.Client{}).Do(req)
 		if err != nil {
 			log.Printf("[api/scrape] upstream_request_failed: %v", err)
+			fallbackPayload, fallbackErr := fallbackScrape(r.Context(), payload.URL, payload.MaxImages)
+			if fallbackErr == nil {
+				writeJSON(w, http.StatusOK, fallbackPayload)
+				return
+			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Scraper service unavailable"})
 			return
 		}
 		defer resp.Body.Close()
 
 		respBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(respBody)
+			return
+		}
+
+		log.Printf("[api/scrape] upstream_status=%d body=%s", resp.StatusCode, truncateLogBody(respBody, 500))
+		fallbackPayload, fallbackErr := fallbackScrape(r.Context(), payload.URL, payload.MaxImages)
+		if fallbackErr == nil {
+			writeJSON(w, http.StatusOK, fallbackPayload)
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
 	}
+}
+
+type scrapeImage struct {
+	Src   string  `json:"src"`
+	Alt   string  `json:"alt"`
+	Tag   string  `json:"tag"`
+	Score float64 `json:"score,omitempty"`
+}
+
+type scrapeFallbackResponse struct {
+	Site        string        `json:"site"`
+	ProductName string        `json:"product_name"`
+	Method      string        `json:"method"`
+	Layers      []string      `json:"layers"`
+	Images      []scrapeImage `json:"images"`
+	Count       int           `json:"count"`
+	TimingMS    float64       `json:"timing_ms"`
+}
+
+func fallbackScrape(ctx context.Context, pageURL string, maxImages int) (scrapeFallbackResponse, error) {
+	startedAt := time.Now()
+	target, err := url.ParseRequestURI(strings.TrimSpace(pageURL))
+	if err != nil {
+		return scrapeFallbackResponse{}, err
+	}
+
+	if maxImages <= 0 {
+		maxImages = 20
+	}
+	if maxImages > 50 {
+		maxImages = 50
+	}
+
+	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return scrapeFallbackResponse{}, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; AgentSwarmBot/1.0)")
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return scrapeFallbackResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return scrapeFallbackResponse{}, fmt.Errorf("fallback html fetch status %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 3*1024*1024))
+	if err != nil {
+		return scrapeFallbackResponse{}, err
+	}
+
+	images := extractFallbackImages(target, string(bodyBytes), maxImages)
+	if len(images) == 0 {
+		return scrapeFallbackResponse{}, errors.New("no images extracted by fallback")
+	}
+
+	host := strings.TrimPrefix(strings.ToLower(target.Hostname()), "www.")
+	return scrapeFallbackResponse{
+		Site:        host,
+		ProductName: "",
+		Method:      "go-fallback",
+		Layers:      []string{"meta", "dom"},
+		Images:      images,
+		Count:       len(images),
+		TimingMS:    math.Round(float64(time.Since(startedAt).Milliseconds())*10) / 10,
+	}, nil
+}
+
+func extractFallbackImages(base *url.URL, htmlBody string, maxImages int) []scrapeImage {
+	if maxImages <= 0 {
+		maxImages = 20
+	}
+
+	images := make([]scrapeImage, 0, maxImages)
+	seen := make(map[string]struct{}, maxImages*2)
+
+	add := func(rawURL string, tag string, strict bool) {
+		if len(images) >= maxImages {
+			return
+		}
+
+		normalized := normalizeImageURL(base, rawURL)
+		if normalized == "" {
+			return
+		}
+		lower := strings.ToLower(normalized)
+		if strings.Contains(lower, "logo") ||
+			strings.Contains(lower, "icon") ||
+			strings.Contains(lower, "sprite") ||
+			strings.Contains(lower, "avatar") ||
+			strings.Contains(lower, "banner") ||
+			strings.Contains(lower, "placeholder") {
+			return
+		}
+		if strict && !imageURLRegex.MatchString(normalized) {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+
+		seen[normalized] = struct{}{}
+		images = append(images, scrapeImage{
+			Src: normalized,
+			Alt: "",
+			Tag: tag,
+		})
+	}
+
+	for _, match := range metaImageRegex.FindAllStringSubmatch(htmlBody, maxImages*2) {
+		if len(match) >= 2 {
+			add(match[1], "meta", false)
+		}
+	}
+	for _, match := range imgSrcRegex.FindAllStringSubmatch(htmlBody, maxImages*8) {
+		if len(match) >= 2 {
+			add(match[1], "dom-img", true)
+		}
+	}
+
+	return images
+}
+
+func normalizeImageURL(base *url.URL, raw string) string {
+	candidate := strings.TrimSpace(html.UnescapeString(raw))
+	candidate = strings.Trim(candidate, `"`)
+	candidate = strings.Trim(candidate, `'`)
+	if candidate == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(candidate)
+	if strings.HasPrefix(lower, "data:") ||
+		strings.HasPrefix(lower, "blob:") ||
+		strings.HasPrefix(lower, "javascript:") {
+		return ""
+	}
+
+	if strings.HasPrefix(candidate, "//") && base != nil && base.Scheme != "" {
+		candidate = base.Scheme + ":" + candidate
+	}
+
+	parsed, err := url.Parse(candidate)
+	if err != nil {
+		return ""
+	}
+	if !parsed.IsAbs() {
+		if base == nil {
+			return ""
+		}
+		parsed = base.ResolveReference(parsed)
+	}
+
+	return parsed.String()
+}
+
+func truncateLogBody(body []byte, maxLen int) string {
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen] + "...(truncated)"
 }
 
 type tryOnRequest struct {
