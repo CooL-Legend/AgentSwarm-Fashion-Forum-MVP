@@ -29,6 +29,7 @@ dist/
 build/
 .cache/
 .tmp/
+backend/fashion-forum-backend
 
 # Local databases / dev data
 dev-data.json

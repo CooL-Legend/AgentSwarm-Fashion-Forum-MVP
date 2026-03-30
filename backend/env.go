@@ -27,6 +27,7 @@ func loadEnv() error {
 		}
 		return nil
 	}
+
 	return firstErr
 }
 
@@ -52,11 +53,11 @@ func loadEnvFile(path string) error {
 		if !ok {
 			continue
 		}
+
 		key = strings.TrimSpace(key)
 		if key == "" {
 			continue
 		}
-
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
@@ -68,9 +69,9 @@ func loadEnvFile(path string) error {
 				value = value[1 : len(value)-1]
 			}
 		}
+
 		value = strings.ReplaceAll(value, `\n`, "\n")
 		value = strings.ReplaceAll(value, `\r`, "\r")
-
 		_ = os.Setenv(key, value)
 	}
 

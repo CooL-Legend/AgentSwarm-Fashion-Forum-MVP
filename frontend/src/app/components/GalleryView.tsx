@@ -1,67 +1,273 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
-import { type GalleryImage } from "./GalleryCard";
+import {
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
+import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
+import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
 
-const SKELETON_CARD_HEIGHTS = [220, 280, 260, 320, 240, 300];
+const PAGE_LIMIT = 100;
+const VIRTUAL_ROW_HEIGHT = 320;
+const VIRTUAL_OVERSCAN_ROWS = 5;
+
+function resolveColumns(width: number): number {
+    if (width >= 1280) return 5;
+    if (width >= 1024) return 4;
+    if (width >= 640) return 3;
+    return 2;
+}
+
+function columnsClass(columns: number): string {
+    switch (columns) {
+        case 5:
+            return "grid-cols-5";
+        case 4:
+            return "grid-cols-4";
+        case 3:
+            return "grid-cols-3";
+        default:
+            return "grid-cols-2";
+    }
+}
 
 export default function GalleryView() {
-    const [images, setImages] = useState<GalleryImage[]>([]);
+    const [images, setImages] = useState<ProductCardItem[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
-    const [lightbox, setLightbox] = useState<GalleryImage | null>(null);
+    const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [lightbox, setLightbox] = useState<ProductCardItem | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
     const [tryOnImage, setTryOnImage] = useState<string | null>(null);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [hasMore, setHasMore] = useState(true);
+    const [total] = useState<number | null>(null);
 
-    // ── Fetch product images from Supabase `products` table ─────
-    useEffect(() => {
-        async function fetchImages() {
-            setLoading(true);
+    const [viewportHeight, setViewportHeight] = useState(0);
+    const [viewportWidth, setViewportWidth] = useState(0);
+    const [scrollY, setScrollY] = useState(0);
+    const [gridTop, setGridTop] = useState(0);
+
+    const gridRef = useRef<HTMLDivElement | null>(null);
+    const sentinelRef = useRef<HTMLDivElement | null>(null);
+    const inFlightRef = useRef(false);
+    const abortRef = useRef<AbortController | null>(null);
+    const requestIdRef = useRef(0);
+
+    const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
+
+    const fetchProducts = useCallback(
+        async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
+            if (inFlightRef.current) {
+                if (reset) {
+                    abortRef.current?.abort();
+                } else {
+                    return;
+                }
+            }
+
+            inFlightRef.current = true;
             setError(null);
+            if (reset) {
+                setLoading(true);
+                setLoadingMore(false);
+            } else {
+                setLoadingMore(true);
+            }
+
+            const controller = new AbortController();
+            abortRef.current = controller;
+            const requestId = ++requestIdRef.current;
+
+            const params = new URLSearchParams({
+                limit: String(PAGE_LIMIT),
+            });
+            if (cursor) {
+                params.set("cursor", cursor);
+            }
+            if (debouncedSearch) {
+                params.set("q", debouncedSearch);
+            }
+
             try {
-                const { data, error: sbError } = await supabase
-                    .from("products")
-                    .select("id, image_url, title, created_at")
-                    .not("image_url", "is", null)
-                    .order("created_at", { ascending: false });
+                const response = await fetch(`${backendApiUrl("/api/products")}?${params.toString()}`, {
+                    cache: "no-store",
+                    signal: controller.signal,
+                });
 
-                if (sbError) throw sbError;
+                if (!response.ok) {
+                    const body = await response.json().catch(() => null);
+                    throw new Error(body?.error || `Products API returned ${response.status}`);
+                }
 
-                const mapped: GalleryImage[] =
-                    (data ?? []).map((product: any) => ({
-                        id: product.id,
-                        image_url: product.image_url,
-                        title: product.title,
-                        created_at: product.created_at,
-                    })) ?? [];
+                const payload = (await response.json()) as ProductsPageResponse;
+                if (requestId !== requestIdRef.current) {
+                    return;
+                }
 
-                setImages(mapped);
+                setHasMore(payload.hasMore);
+                setNextCursor(payload.nextCursor);
+                setImages((prev) => {
+                    const merged = new Map<string, ProductCardItem>();
+                    const base = reset ? [] : prev;
+                    for (const item of base) {
+                        merged.set(item.id, item);
+                    }
+                    for (const item of payload.items) {
+                        merged.set(item.id, item);
+                    }
+                    return Array.from(merged.values());
+                });
             } catch (err: unknown) {
-                const message =
-                    err instanceof Error ? err.message : "Failed to load images";
+                if (controller.signal.aborted) {
+                    return;
+                }
+                const message = err instanceof Error ? err.message : "Failed to load products";
+                if (reset) {
+                    setImages([]);
+                    setHasMore(false);
+                    setNextCursor(null);
+                }
                 setError(message);
             } finally {
-                setLoading(false);
+                if (requestId === requestIdRef.current) {
+                    setLoading(false);
+                    setLoadingMore(false);
+                }
+                inFlightRef.current = false;
+                if (abortRef.current === controller) {
+                    abortRef.current = null;
+                }
             }
-        }
-        fetchImages();
+        },
+        [debouncedSearch],
+    );
+
+    useEffect(() => {
+        const timer = window.setTimeout(() => {
+            setDebouncedSearch(search.trim());
+        }, 350);
+        return () => window.clearTimeout(timer);
+    }, [search]);
+
+    useEffect(() => {
+        setImages([]);
+        setHasMore(true);
+        setNextCursor(null);
+        fetchProducts({ cursor: null, reset: true });
+    }, [debouncedSearch, fetchProducts]);
+
+    useEffect(() => {
+        return () => {
+            abortRef.current?.abort();
+        };
     }, []);
 
-    const filtered = search.trim()
-        ? images.filter((img) =>
-            img.title?.toLowerCase().includes(search.toLowerCase())
-        )
-        : images;
+    useEffect(() => {
+        let ticking = false;
 
-    // ── UI ──────────────────────────────────────────────────────
+        const updateViewport = () => {
+            setViewportHeight(window.innerHeight);
+            setViewportWidth(window.innerWidth);
+            setScrollY(window.scrollY);
+            if (gridRef.current) {
+                const rect = gridRef.current.getBoundingClientRect();
+                setGridTop(rect.top + window.scrollY);
+            }
+        };
+
+        const onChange = () => {
+            if (ticking) return;
+            ticking = true;
+            window.requestAnimationFrame(() => {
+                updateViewport();
+                ticking = false;
+            });
+        };
+
+        updateViewport();
+        window.addEventListener("scroll", onChange, { passive: true });
+        window.addEventListener("resize", onChange);
+
+        return () => {
+            window.removeEventListener("scroll", onChange);
+            window.removeEventListener("resize", onChange);
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!gridRef.current) return;
+        const rect = gridRef.current.getBoundingClientRect();
+        setGridTop(rect.top + window.scrollY);
+    }, [images.length]);
+
+    useEffect(() => {
+        if (!sentinelRef.current) return;
+        const observer = new IntersectionObserver(
+            (entries) => {
+                const entry = entries[0];
+                if (!entry?.isIntersecting) return;
+                if (loading || loadingMore) return;
+                if (!hasMore || !nextCursor) return;
+                fetchProducts({ cursor: nextCursor, reset: false });
+            },
+            {
+                root: null,
+                rootMargin: "1000px 0px 700px 0px",
+                threshold: 0,
+            },
+        );
+
+        observer.observe(sentinelRef.current);
+        return () => observer.disconnect();
+    }, [fetchProducts, hasMore, loading, loadingMore, nextCursor]);
+
+    const { startIndex, endIndex, topSpacerHeight, bottomSpacerHeight } = useMemo(() => {
+        if (images.length === 0 || viewportHeight <= 0) {
+            return {
+                startIndex: 0,
+                endIndex: images.length,
+                topSpacerHeight: 0,
+                bottomSpacerHeight: 0,
+            };
+        }
+
+        const totalRows = Math.ceil(images.length / columns);
+        const relativeScroll = Math.max(scrollY - gridTop, 0);
+        const startRow = Math.max(
+            Math.floor(relativeScroll / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN_ROWS,
+            0,
+        );
+        const endRow = Math.min(
+            totalRows,
+            Math.ceil((relativeScroll + viewportHeight) / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN_ROWS,
+        );
+        const visibleStart = startRow * columns;
+        const visibleEnd = Math.min(images.length, endRow * columns);
+
+        return {
+            startIndex: visibleStart,
+            endIndex: visibleEnd,
+            topSpacerHeight: startRow * VIRTUAL_ROW_HEIGHT,
+            bottomSpacerHeight: Math.max(0, (totalRows - endRow) * VIRTUAL_ROW_HEIGHT),
+        };
+    }, [columns, gridTop, images.length, scrollY, viewportHeight]);
+
+    const visibleImages = useMemo(
+        () => images.slice(startIndex, endIndex),
+        [endIndex, images, startIndex],
+    );
+
     return (
         <div className="mx-auto max-w-7xl px-4 py-8">
-            {/* ── Hero ───────────────────────────────────────────── */}
             <div className="relative mb-8 overflow-hidden rounded-3xl border border-zinc-800/80 bg-gradient-to-b from-zinc-900 via-zinc-900 to-zinc-950 shadow-[0_20px_70px_rgba(0,0,0,0.45)]">
                 <div className="pointer-events-none absolute -left-28 top-0 h-64 w-64 rounded-full bg-amber-400/12 blur-3xl" />
                 <div className="pointer-events-none absolute -right-24 bottom-0 h-64 w-64 rounded-full bg-orange-500/10 blur-3xl" />
@@ -78,11 +284,10 @@ export default function GalleryView() {
                             </span>
                         </h1>
                         <p className="mt-2 max-w-xl text-sm text-zinc-400">
-                            Search locally, upload an image, or paste a link to find your garment.
+                            Search Supabase products, upload an image, or paste a link to find your garment.
                         </p>
                     </div>
 
-                    {/* Garment Input: Local Search / Upload / Link */}
                     <div className="my-6">
                         <GarmentInput
                             search={search}
@@ -91,7 +296,6 @@ export default function GalleryView() {
                         />
                     </div>
 
-                    {/* Selected garment banner with Try On button */}
                     {garmentSelection && garmentSelection.imageUrl && (
                         <div className="mx-auto mb-2 flex max-w-2xl items-center gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-2.5">
                             <img
@@ -99,8 +303,8 @@ export default function GalleryView() {
                                 alt="Selected garment"
                                 className="h-12 w-12 rounded-lg object-cover"
                             />
-                            <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium text-amber-300/90 truncate">
+                            <div className="min-w-0 flex-1">
+                                <p className="truncate text-xs font-medium text-amber-300/90">
                                     {garmentSelection.localProduct?.title || `Garment via ${garmentSelection.mode}`}
                                 </p>
                                 <p className="text-[10px] text-zinc-500">Click &quot;Try On&quot; to see it on you</p>
@@ -113,7 +317,7 @@ export default function GalleryView() {
                             </button>
                             <button
                                 onClick={() => setGarmentSelection(null)}
-                                className="shrink-0 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                                className="shrink-0 text-xs text-zinc-500 transition-colors hover:text-zinc-300"
                             >
                                 Clear
                             </button>
@@ -122,17 +326,13 @@ export default function GalleryView() {
                 </div>
             </div>
 
-            {/* ── States ─────────────────────────────────────────── */}
             {loading && (
-                <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
-                    {Array.from({ length: 12 }).map((_, i) => (
+                <div className={`grid ${columnsClass(columns)} gap-4`}>
+                    {Array.from({ length: 12 }).map((_, index) => (
                         <div
-                            key={i}
-                            className="mb-4 break-inside-avoid animate-pulse rounded-2xl bg-zinc-800/60"
-                            style={{
-                                height: `${SKELETON_CARD_HEIGHTS[i % SKELETON_CARD_HEIGHTS.length]}px`,
-                                animationDelay: `${i * 100}ms`,
-                            }}
+                            key={index}
+                            className="h-[300px] animate-pulse rounded-2xl bg-zinc-800/60"
+                            style={{ animationDelay: `${index * 60}ms` }}
                         />
                     ))}
                 </div>
@@ -155,19 +355,12 @@ export default function GalleryView() {
                             />
                         </svg>
                     </div>
-                    <p className="text-sm font-medium text-red-400">
-                        Could not load gallery
-                    </p>
+                    <p className="text-sm font-medium text-red-400">Could not load gallery</p>
                     <p className="mt-1 max-w-sm text-xs text-zinc-500">{error}</p>
-                    <p className="mt-3 text-xs text-zinc-600">
-                        Make sure your <code className="text-zinc-400">.env</code>{" "}
-                        has valid Supabase credentials and the{" "}
-                        <code className="text-zinc-400">products</code> table exists.
-                    </p>
                 </div>
             )}
 
-            {!loading && !error && filtered.length === 0 && (
+            {!loading && !error && images.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-20 text-center">
                     <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-zinc-800">
                         <svg
@@ -185,98 +378,147 @@ export default function GalleryView() {
                         </svg>
                     </div>
                     <p className="text-sm font-medium text-zinc-400">
-                        {search
-                            ? "No images match your filters"
-                            : "No images yet"}
+                        {debouncedSearch ? "No products match your search" : "No products yet"}
                     </p>
                     <p className="mt-1 text-xs text-zinc-600">
-                        {search
-                            ? "Try broadening your search"
-                            : "Add images to your Supabase 'products' table to see them here"}
+                        {debouncedSearch
+                            ? "Try a broader search keyword"
+                            : "Add images to the Supabase products table to populate this view"}
                     </p>
                 </div>
             )}
 
-            {/* ── Image Grid ─────────────────────────────────────── */}
-            {!loading && !error && filtered.length > 0 && (
-                <div className="columns-2 gap-4 sm:columns-3 lg:columns-4 xl:columns-5">
-                    {filtered.map((img, i) => {
-                        const isSelected = garmentSelection?.mode === "local" && garmentSelection.localProduct?.id === img.id;
-                        return (
-                            <button
-                                type="button"
-                                key={img.id}
-                                onClick={() => {
-                                    setGarmentSelection({
-                                        mode: "local",
-                                        imageUrl: img.image_url,
-                                        localProduct: { id: img.id, title: img.title, image_url: img.image_url },
-                                    });
-                                }}
-                                onDoubleClick={() => setLightbox(img)}
-                                className={`group relative mb-4 block w-full break-inside-avoid overflow-hidden rounded-2xl border transition-all duration-300 ${
-                                    isSelected
-                                        ? "border-amber-400/60 ring-2 ring-amber-400/30"
-                                        : "border-zinc-800/70 hover:border-zinc-700"
-                                } bg-zinc-900/80`}
-                            >
-                                <img
-                                    src={img.image_url}
-                                    alt={img.title || `Product image ${i + 1}`}
-                                    loading="lazy"
-                                    className="w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
+            {!loading && !error && images.length > 0 && (
+                <>
+                    <div ref={gridRef}>
+                        {topSpacerHeight > 0 && <div style={{ height: `${topSpacerHeight}px` }} />}
+                        <div className={`grid ${columnsClass(columns)} gap-4`}>
+                            {visibleImages.map((img, index) => {
+                                const isSelected =
+                                    garmentSelection?.mode === "local" &&
+                                    garmentSelection.localProduct?.id === img.id;
+                                return (
+                                    <button
+                                        type="button"
+                                        key={img.id}
+                                        onClick={() => {
+                                            setGarmentSelection({
+                                                mode: "local",
+                                                imageUrl: img.image_url,
+                                                localProduct: {
+                                                    id: img.id,
+                                                    title: img.title || undefined,
+                                                    image_url: img.image_url,
+                                                },
+                                            });
+                                        }}
+                                        onDoubleClick={() => setLightbox(img)}
+                                        className={`group relative h-[300px] overflow-hidden rounded-2xl border transition-all duration-300 ${
+                                            isSelected
+                                                ? "border-amber-400/60 ring-2 ring-amber-400/30"
+                                                : "border-zinc-800/70 hover:border-zinc-700"
+                                        } bg-zinc-900/80`}
+                                    >
+                                        <img
+                                            src={img.image_url}
+                                            alt={img.title || `Product image ${startIndex + index + 1}`}
+                                            loading="lazy"
+                                            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
+                                        />
+                                        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/70 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
+                                            <span className="truncate text-xs font-medium text-white">
+                                                {img.title || "Untitled product"}
+                                            </span>
+                                            <span className="shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
+                                                {isSelected ? "Selected" : "Select"}
+                                            </span>
+                                        </div>
+                                        <div
+                                            className="pointer-events-auto absolute left-2 top-2 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+                                            onClick={(event) => {
+                                                event.stopPropagation();
+                                                setTryOnImage(img.image_url);
+                                            }}
+                                        >
+                                            <span className="flex cursor-pointer items-center gap-1 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold text-black shadow-lg transition-colors hover:bg-amber-400">
+                                                <svg
+                                                    className="h-3 w-3"
+                                                    fill="none"
+                                                    viewBox="0 0 24 24"
+                                                    stroke="currentColor"
+                                                    strokeWidth={2.5}
+                                                >
+                                                    <path
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0"
+                                                    />
+                                                </svg>
+                                                Try On
+                                            </span>
+                                        </div>
+                                        {isSelected && (
+                                            <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-black">
+                                                <svg
+                                                    className="h-3.5 w-3.5"
+                                                    fill="none"
+                                                    viewBox="0 0 24 24"
+                                                    stroke="currentColor"
+                                                    strokeWidth={3}
+                                                >
+                                                    <path
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        d="M5 13l4 4L19 7"
+                                                    />
+                                                </svg>
+                                            </div>
+                                        )}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        {bottomSpacerHeight > 0 && <div style={{ height: `${bottomSpacerHeight}px` }} />}
+                    </div>
+
+                    <div ref={sentinelRef} className="h-1" />
+
+                    <div className="mt-5 text-center text-xs text-zinc-600">
+                        Loaded {images.length} product{images.length !== 1 && "s"}
+                        {total != null ? ` of ${total}` : ""}
+                        {hasMore ? " (scroll for more)" : " (all loaded)"}
+                    </div>
+
+                    {loadingMore && (
+                        <div className="mt-4 flex items-center justify-center gap-2 text-xs text-zinc-500">
+                            <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                                <circle
+                                    className="opacity-25"
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    strokeWidth="4"
                                 />
-                                {/* Hover overlay */}
-                                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/70 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                                    <span className="truncate text-xs font-medium text-white">{img.title}</span>
-                                    <span className="shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-                                        {isSelected ? "Selected" : "Select"}
-                                    </span>
-                                </div>
-                                {/* Try On shortcut */}
-                                <div
-                                    className="pointer-events-auto absolute left-2 top-2 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-                                    onClick={(e) => { e.stopPropagation(); setTryOnImage(img.image_url); }}
-                                >
-                                    <span className="flex items-center gap-1 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold text-black shadow-lg cursor-pointer hover:bg-amber-400 transition-colors">
-                                        <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0" />
-                                        </svg>
-                                        Try On
-                                    </span>
-                                </div>
-                                {/* Selected check */}
-                                {isSelected && (
-                                    <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-black">
-                                        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                        </svg>
-                                    </div>
-                                )}
-                            </button>
-                        );
-                    })}
-                </div>
+                                <path
+                                    className="opacity-75"
+                                    fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                                />
+                            </svg>
+                            Loading more products...
+                        </div>
+                    )}
+                </>
             )}
 
-            {/* ── Results count ──────────────────────────────────── */}
-            {!loading && !error && filtered.length > 0 && (
-                <div className="mt-6 text-center text-xs text-zinc-600">
-                    Showing {filtered.length} of {images.length} image
-                    {images.length !== 1 && "s"}
-                </div>
-            )}
-
-            {/* ── Lightbox ───────────────────────────────────────── */}
             {lightbox && (
                 <GalleryLightbox
                     image={lightbox}
                     onClose={() => setLightbox(null)}
-                    userId={null}
                 />
             )}
 
-            {/* ── Try-On Modal ──────────────────────────────────── */}
             {tryOnImage && (
                 <TryOnModal
                     garmentImageUrl={tryOnImage}

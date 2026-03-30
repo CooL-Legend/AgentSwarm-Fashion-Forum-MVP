@@ -1,45 +1,17 @@
 "use client";
 
-import { useEffect, useCallback, useState } from "react";
-import type { GalleryImage } from "./GalleryCard";
-import { supabase } from "@/lib/supabase";
+import { useEffect, useCallback } from "react";
+import type { ProductCardItem } from "@/lib/gallery-types";
 
 interface Props {
-    image: GalleryImage;
+    image: ProductCardItem;
     onClose: () => void;
-    userId: string | null;
 }
 
-export default function GalleryLightbox({ image, onClose, userId }: Props) {
-    const [viewTracked, setViewTracked] = useState(false);
-    const [viewStartTime, setViewStartTime] = useState<number | null>(null);
-
-    // Track view when lightbox opens
-    useEffect(() => {
-        if (userId && !viewTracked) {
-            setViewStartTime(Date.now());
-        }
-    }, [userId, viewTracked]);
-
-    // Track view duration when lightbox closes
+export default function GalleryLightbox({ image, onClose }: Props) {
     const handleClose = useCallback(() => {
-        if (userId && viewStartTime) {
-            const viewDuration = (Date.now() - viewStartTime) / 1000; // seconds
-            
-            // Only track if viewed for at least 1 second
-            if (viewDuration >= 1) {
-                supabase.from("interactions").insert({
-                    user_id: userId,
-                    item_id: String(image.id),
-                    item_type: "PRODUCT",
-                    type: "VIEW",
-                }).then(({ error }) => {
-                    if (error) console.error("Failed to track view:", error);
-                });
-            }
-        }
         onClose();
-    }, [userId, viewStartTime, image.id, onClose]);
+    }, [onClose]);
 
     const handleKey = useCallback(
         (e: KeyboardEvent) => {
@@ -108,24 +80,7 @@ export default function GalleryLightbox({ image, onClose, userId }: Props) {
                                     {image.title}
                                 </h2>
                             )}
-                            {(image.brand || image.price) && (
-                                <p className="mt-1 text-sm text-zinc-300">
-                                    {[image.brand, image.price ? `₹${image.price}` : null]
-                                        .filter(Boolean)
-                                        .join(" • ")}
-                                </p>
-                            )}
-                            {image.description && (
-                                <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-                                    {image.description}
-                                </p>
-                            )}
                         </div>
-                        {image.category && (
-                            <span className="shrink-0 rounded-full bg-amber-500/15 px-3 py-1 text-xs font-medium uppercase tracking-wider text-amber-400">
-                                {image.category}
-                            </span>
-                        )}
                     </div>
                     {image.created_at && (
                         <p className="mt-2 text-[11px] text-zinc-600">
@@ -135,16 +90,6 @@ export default function GalleryLightbox({ image, onClose, userId }: Props) {
                                 day: "numeric",
                             })}
                         </p>
-                    )}
-                    {image.product_url && (
-                        <a
-                            href={image.product_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-3 inline-flex text-xs font-medium text-amber-400 transition-colors hover:text-amber-300"
-                        >
-                            View product
-                        </a>
                     )}
                 </div>
             </div>

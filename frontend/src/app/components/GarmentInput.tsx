@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
+import { backendApiUrl } from "@/lib/backend-api";
 
 export interface GarmentSelection {
     mode: "local" | "upload" | "link";
@@ -104,7 +105,7 @@ export default function GarmentInput({ search, onSearchChange, onGarmentSelect }
         // Product page URL — scrape it
         setScraping(true);
         try {
-            const resp = await fetch("/api/scrape", {
+            const resp = await fetch(backendApiUrl("/api/scrape"), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ url: linkUrl, max_images: 3 }),
@@ -184,7 +185,7 @@ export default function GarmentInput({ search, onSearchChange, onGarmentSelect }
                         </svg>
                         <input
                             type="text"
-                            placeholder="Search garments from local database..."
+                            placeholder="Search garments from Supabase products..."
                             value={search}
                             onChange={(e) => onSearchChange(e.target.value)}
                             className="w-full rounded-2xl border border-zinc-700/80 bg-zinc-950/90 py-3 pl-11 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:border-amber-400/60 focus:ring-2 focus:ring-amber-400/20"

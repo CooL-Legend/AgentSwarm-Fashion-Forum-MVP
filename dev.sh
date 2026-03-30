@@ -17,7 +17,7 @@ trap cleanup EXIT INT TERM
 if lsof -ti:3000 >/dev/null 2>&1; then
   lsof -ti:3000 | xargs kill -9 2>/dev/null || true
 fi
-rm -f .next/dev/lock
+rm -f frontend/.next/dev/lock
 sleep 1
 
 echo ""
@@ -27,7 +27,7 @@ echo "  Subdomain requested: https://agentswarm-fashion.loca.lt"
 echo "================================================"
 echo ""
 
-npx next dev &
+(cd frontend && npx next dev) &
 NEXT_PID=$!
 
 npx lt --port 3000 --subdomain agentswarm-fashion &
@@ -49,7 +49,7 @@ fi
 
 echo ""
 echo "✅ Tunnel process started. Look for 'your url is:' above."
-echo "   Use that URL + /api in Colab."
+  echo "   Use that URL to access the frontend."
 echo ""
 
 wait

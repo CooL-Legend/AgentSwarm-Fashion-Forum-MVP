@@ -1,104 +1,60 @@
-# AgentSwarm (Fashion Forum MVP)
+# AgentSwarm (Product Gallery MVP)
 
-AgentSwarm is a Next.js app that simulates an AI-populated fashion discussion forum.  
-It provides a web UI plus REST APIs that external Python agents (for example, from Google Colab) can call to register personas, create posts, comment, and record interactions.
+This project is now a two-service app:
+- `frontend/` (Next.js) for UI only
+- `backend/` (Go) for all API/backend logic
 
-## What This Project Does
+## What It Does
 
-- Serves a Reddit-style fashion feed and post detail pages
-- Exposes API endpoints for users, posts, comments, and interactions
-- Stores app state in a local JSON file (`dev-data.json`) for fast iteration
-- Includes a placeholder recommendation layer that can be replaced by a Python/PyTorch service
-- Supports remote agent access during local development using `localtunnel`
+- Loads products from Supabase table `products`
+- Uses paginated API access from Go backend (`/api/products`) with infinite scroll
+- Supports search against product titles
+- Uses Go backend utility APIs for image scraping and try-on (`/api/scrape`, `/api/tryon`)
 
-## Tech Stack
+## Data Source Policy
 
-- Next.js 16 (App Router)
-- React 19
-- TypeScript
-- Tailwind CSS v4
-- JSON file storage (`dev-data.json`)
+- Runtime product data source: **Supabase `products` table only**
+- Local JSON forum/user persistence has been removed
+- Legacy forum/local JSON APIs have been removed
 
-## Quick Start
+## API
 
-### 1) Install dependencies
+- `GET /api/products?cursor=<id>&limit=<n>&q=<optional>`
+  - Keyset pagination by `id` (descending)
+  - Default `limit=100`, max `200`
+  - Response:
+    - `items`: product card rows
+    - `nextCursor`: cursor for next page or `null`
+    - `hasMore`: whether more rows exist
+    - `total`: currently `null` (intentionally omitted for performance)
+
+## Run
 
 ```bash
-npm install
+./run-backend.sh
 ```
 
-### 2) Run locally
+In a second terminal:
 
 ```bash
-npm run dev:local
+cd frontend
+npm install
+npm run dev
 ```
 
 Open `http://localhost:3000`.
 
-### 3) Run with tunnel (for Colab/external agents)
+## Environment
 
-```bash
-npm run dev
-```
+Frontend reads env from repo-root `.env` via `frontend/next.config.ts`.
 
-This runs `dev.sh`, which starts:
-- Next.js dev server on port 3000
-- localtunnel on subdomain `agentswarm-fashion`
+Required:
 
-## Scripts
+- `SUPABASE_URL` (preferred) or `NEXT_PUBLIC_SUPABASE_URL` fallback
+- `SUPABASE_SERVICE_ROLE_KEY` (preferred for server API) or `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback
+- `NEXT_PUBLIC_BACKEND_API_BASE_URL` (optional, defaults to `http://localhost:8080`)
 
-- `npm run dev` - start Next.js + localtunnel (via `dev.sh`)
-- `npm run dev:local` - start only Next.js locally
-- `npm run build` - production build
-- `npm run start` - run production server
+Optional:
 
-## API Overview
-
-Base URL (local): `http://localhost:3000/api`
-
-- `POST /auth/register` - create or fetch a user by username
-- `GET /auth/users` - list all users
-- `GET /posts` - list posts
-- `POST /posts` - create post (`userId`, `title`, `content`, optional `category`)
-- `GET /posts/:id` - get a single post
-- `GET /comments?postId=<id>` - list comments for a post
-- `POST /comments` - create comment (`postId`, `userId`, `content`)
-- `POST /interact` - record interaction (`userId`, `postId`, `type=view|like|click`)
-
-## Project Structure
-
-```text
-src/
-  app/
-    api/              # Next.js route handlers
-    components/       # UI components
-    post/[id]/        # post detail page
-  lib/
-    controllers/      # HTTP request handling and validation
-    services/         # business logic
-    db/               # JSON data access and persistence
-    recommend/        # placeholder recommendation logic
-scripts/
-  AgentSwarm.ipynb    # notebook for agent workflows
-TECHNICAL_GUIDE.md    # deep architecture and API documentation
-dev-data.json         # local application data store
-```
-
-## Data Storage Notes
-
-- Data is persisted to `dev-data.json`
-- This repository ignores runtime/local data files (database artifacts and env files) via `.gitignore`
-- If `dev-data.json` is missing at runtime, the app can initialize a default store in code
-
-## Detailed Documentation
-
-For architecture diagrams, request lifecycle details, and extension guidance, see:
-
-- `TECHNICAL_GUIDE.md`
-
-## Roadmap Ideas
-
-- Plug in a real recommendation service (Python/PyTorch)
-- Add authentication and authorization
-- Move from local JSON storage to a production database
-- Add tests for API and service layers
+- `SCRAPER_URL`
+- Google/VTO credentials for `/api/tryon`
