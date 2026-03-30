@@ -12,11 +12,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +27,8 @@ import (
 const (
 	defaultProductsLimit = 100
 	maxProductsLimit     = 200
+	maxScrapeResponseLen = 2 * 1024 * 1024
+	maxPageHTMLBytes     = 4 * 1024 * 1024
 )
 
 type configError struct {
@@ -273,7 +277,8 @@ func scrapeHandler(cfg AppConfig) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "URL is required"})
 			return
 		}
-		if _, err := url.ParseRequestURI(payload.URL); err != nil {
+		parsedURL, err := url.ParseRequestURI(payload.URL)
+		if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid URL"})
 			return
 		}
@@ -301,16 +306,310 @@ func scrapeHandler(cfg AppConfig) http.HandlerFunc {
 		resp, err := (&http.Client{}).Do(req)
 		if err != nil {
 			log.Printf("[api/scrape] upstream_request_failed: %v", err)
+			if fallbackPayload, fallbackErr := fallbackScrape(ctx, payload.URL, payload.MaxImages); fallbackErr == nil {
+				writeJSON(w, http.StatusOK, fallbackPayload)
+				return
+			}
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Scraper service unavailable"})
 			return
 		}
 		defer resp.Body.Close()
 
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxScrapeResponseLen))
+		if resp.StatusCode >= 400 {
+			log.Printf("[api/scrape] upstream_error status=%d body=%s", resp.StatusCode, truncateText(string(respBody), 300))
+			if fallbackPayload, fallbackErr := fallbackScrape(ctx, payload.URL, payload.MaxImages); fallbackErr == nil {
+				writeJSON(w, http.StatusOK, fallbackPayload)
+				return
+			}
+
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": upstreamScrapeErrorMessage(resp.StatusCode, respBody),
+			})
+			return
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(respBody)
 	}
+}
+
+type scrapedImage struct {
+	Src string `json:"src"`
+	Alt string `json:"alt"`
+	Tag string `json:"tag"`
+}
+
+var (
+	metaTagPattern      = regexp.MustCompile(`(?is)<meta\b[^>]*>`)
+	imgTagPattern       = regexp.MustCompile(`(?is)<img\b[^>]*>`)
+	sourceTagPattern    = regexp.MustCompile(`(?is)<source\b[^>]*>`)
+	attrPattern         = regexp.MustCompile(`(?is)([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')`)
+	httpImageURLPattern = regexp.MustCompile(`https?://[^\s"'<>]+(?:\.jpe?g|\.png|\.webp|\.gif|\.avif)(?:\?[^\s"'<>]*)?`)
+)
+
+func fallbackScrape(ctx context.Context, pageURL string, maxImages int) (map[string]any, error) {
+	startedAt := time.Now()
+	document, resolvedURL, err := fetchHTMLDocument(ctx, pageURL)
+	if err != nil {
+		return nil, err
+	}
+
+	images := extractFallbackImages(document, resolvedURL, maxImages)
+	if len(images) == 0 {
+		return nil, errors.New("no images found in fallback scraper")
+	}
+
+	return map[string]any{
+		"site":         fallbackSiteName(resolvedURL),
+		"product_name": "",
+		"method":       "html_fallback",
+		"layers":       []string{"meta", "img", "source", "url"},
+		"images":       images,
+		"count":        len(images),
+		"timing_ms":    float64(time.Since(startedAt).Milliseconds()),
+	}, nil
+}
+
+func fetchHTMLDocument(ctx context.Context, pageURL string) (string, *url.URL, error) {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(pageURL))
+	if err != nil {
+		return "", nil, err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", nil, errors.New("unsupported URL scheme")
+	}
+
+	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		return "", nil, fmt.Errorf("fallback fetch failed with status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPageHTMLBytes))
+	if err != nil {
+		return "", nil, err
+	}
+
+	resolved := resp.Request.URL
+	if resolved == nil {
+		resolved = parsed
+	}
+	return string(body), resolved, nil
+}
+
+func extractFallbackImages(document string, baseURL *url.URL, maxImages int) []scrapedImage {
+	if maxImages <= 0 {
+		maxImages = 20
+	}
+
+	seen := make(map[string]struct{})
+	images := make([]scrapedImage, 0, maxImages)
+	addImage := func(rawURL, alt, tag string) {
+		if len(images) >= maxImages {
+			return
+		}
+
+		normalized := normalizeImageURL(rawURL, baseURL)
+		if normalized == "" || !isLikelyProductImage(normalized) {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+		seen[normalized] = struct{}{}
+		images = append(images, scrapedImage{
+			Src: normalized,
+			Alt: strings.TrimSpace(html.UnescapeString(alt)),
+			Tag: tag,
+		})
+	}
+
+	for _, tag := range metaTagPattern.FindAllString(document, -1) {
+		attrs := parseTagAttributes(tag)
+		key := strings.ToLower(strings.TrimSpace(attrs["property"]))
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(attrs["name"]))
+		}
+		if !isImageMetaTag(key) {
+			continue
+		}
+		addImage(attrs["content"], "", "meta")
+	}
+
+	for _, tag := range imgTagPattern.FindAllString(document, -1) {
+		attrs := parseTagAttributes(tag)
+		alt := attrs["alt"]
+		addImage(attrs["src"], alt, "img")
+		addImage(firstSrcsetURL(attrs["srcset"]), alt, "img")
+	}
+
+	for _, tag := range sourceTagPattern.FindAllString(document, -1) {
+		attrs := parseTagAttributes(tag)
+		addImage(firstSrcsetURL(attrs["srcset"]), "", "source")
+	}
+
+	for _, rawURL := range httpImageURLPattern.FindAllString(document, -1) {
+		addImage(rawURL, "", "url")
+	}
+
+	return images
+}
+
+func parseTagAttributes(tag string) map[string]string {
+	attrs := map[string]string{}
+	for _, match := range attrPattern.FindAllStringSubmatch(tag, -1) {
+		key := strings.ToLower(strings.TrimSpace(match[1]))
+		if key == "" {
+			continue
+		}
+
+		value := strings.TrimSpace(match[2])
+		if value == "" && len(match) > 3 {
+			value = strings.TrimSpace(match[3])
+		}
+		attrs[key] = html.UnescapeString(value)
+	}
+	return attrs
+}
+
+func isImageMetaTag(key string) bool {
+	switch key {
+	case "og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstSrcsetURL(srcset string) string {
+	srcset = strings.TrimSpace(srcset)
+	if srcset == "" {
+		return ""
+	}
+
+	for _, candidate := range strings.Split(srcset, ",") {
+		fields := strings.Fields(strings.TrimSpace(candidate))
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[0]
+	}
+	return ""
+}
+
+func normalizeImageURL(rawURL string, baseURL *url.URL) string {
+	value := strings.TrimSpace(html.UnescapeString(rawURL))
+	value = strings.Trim(value, "'\"")
+	if value == "" {
+		return ""
+	}
+	lower := strings.ToLower(value)
+	if strings.HasPrefix(lower, "data:") || strings.HasPrefix(lower, "javascript:") {
+		return ""
+	}
+
+	if strings.HasPrefix(value, "//") {
+		scheme := "https"
+		if baseURL != nil && baseURL.Scheme != "" {
+			scheme = baseURL.Scheme
+		}
+		value = scheme + ":" + value
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	if baseURL != nil {
+		parsed = baseURL.ResolveReference(parsed)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return ""
+	}
+
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func isLikelyProductImage(imageURL string) bool {
+	lower := strings.ToLower(imageURL)
+	blockedTokens := []string{
+		"favicon",
+		"sprite",
+		"spacer",
+		"tracking",
+		"pixel",
+		"blank.gif",
+		"1x1",
+	}
+
+	for _, token := range blockedTokens {
+		if strings.Contains(lower, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func fallbackSiteName(pageURL *url.URL) string {
+	if pageURL == nil {
+		return "generic"
+	}
+	host := strings.TrimSpace(strings.ToLower(pageURL.Hostname()))
+	host = strings.TrimPrefix(host, "www.")
+	if host == "" {
+		return "generic"
+	}
+	return host
+}
+
+func upstreamScrapeErrorMessage(statusCode int, body []byte) string {
+	defaultMessage := fmt.Sprintf("Scraper upstream failed (status %d)", statusCode)
+	if len(body) == 0 {
+		return defaultMessage
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if value, ok := payload["error"].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+		if value, ok := payload["detail"].(string); ok && strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return defaultMessage
+	}
+	return defaultMessage + ": " + truncateText(trimmed, 220)
+}
+
+func truncateText(input string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(input) <= maxLen {
+		return input
+	}
+	return input[:maxLen] + "..."
 }
 
 type tryOnRequest struct {

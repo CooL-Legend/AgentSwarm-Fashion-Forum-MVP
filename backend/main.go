@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -23,7 +25,7 @@ func loadConfig() (AppConfig, error) {
 		CORSOrigin:        getenv("BACKEND_CORS_ORIGIN", "*"),
 		SupabaseURL:       getenv("SUPABASE_URL", getenv("NEXT_PUBLIC_SUPABASE_URL", "")),
 		SupabaseAPIKey:    getenv("SUPABASE_SERVICE_ROLE_KEY", getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")),
-		ScraperURL:        getenv("SCRAPER_URL", "https://varun2808-product-image-scraper.hf.space"),
+		ScraperURL:        normalizeScraperURL(getenv("SCRAPER_URL", "https://varun2808-product-image-scraper.hf.space")),
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
@@ -34,6 +36,31 @@ func loadConfig() (AppConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func normalizeScraperURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return strings.TrimRight(trimmed, "/")
+	}
+
+	if strings.EqualFold(parsed.Hostname(), "huggingface.co") {
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) >= 3 && parts[0] == "spaces" {
+			owner := strings.TrimSpace(parts[1])
+			space := strings.TrimSpace(parts[2])
+			if owner != "" && space != "" {
+				return "https://" + owner + "-" + space + ".hf.space"
+			}
+		}
+	}
+
+	return strings.TrimRight(trimmed, "/")
 }
 
 func main() {
