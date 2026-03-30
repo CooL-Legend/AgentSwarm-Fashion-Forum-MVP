@@ -1,7 +1,7 @@
 # AgentSwarm (Product Gallery MVP)
 
 This project is now a two-service app:
-- `frontend/` (Next.js) for UI only
+- repo root (Next.js) for UI only
 - `backend/` (Go) for all API/backend logic
 
 ## What It Does
@@ -37,7 +37,6 @@ This project is now a two-service app:
 In a second terminal:
 
 ```bash
-cd frontend
 npm install
 npm run dev
 ```
@@ -46,7 +45,7 @@ Open `http://localhost:3000`.
 
 ## Environment
 
-Frontend reads env from repo-root `.env` via `frontend/next.config.ts`.
+Frontend reads env from repo-root `.env` via `next.config.ts`.
 
 Required:
 

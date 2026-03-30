@@ -1,7 +1,27 @@
 {
+  "name": "fashion-forum",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev": "lsof -ti :3000 -ti :3001 -ti :3002 | xargs kill -9 2>/dev/null; rm -f .next/dev/lock",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
   "dependencies": {
     "@supabase/supabase-js": "^2.97.0",
-    "axios": "^1.13.5",
-    "dotenv": "^17.3.1"
+    "csv-parser": "^3.2.0",
+    "dotenv": "^17.3.1",
+    "next": "^16.1.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.0",
+    "@types/node": "^25.3.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -2,7 +2,7 @@
 
 ## Architecture
 
-- Frontend: Next.js App Router (`frontend/src/app`) for UI only
+- Frontend: Next.js App Router (`src/app`) for UI only
 - Backend: Go HTTP API (`backend/`) for all runtime backend behavior
 - Data source: Supabase `products` table
 - Runtime backend routes (served by Go on `:8080`):
