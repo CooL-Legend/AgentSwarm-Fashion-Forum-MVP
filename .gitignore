@@ -64,6 +64,9 @@ venv/
 __pycache__/
 *.pyc
 
+# Vercel
+.vercel/
+
 # Misc
 hf-scraper-space/
 .kilo/
