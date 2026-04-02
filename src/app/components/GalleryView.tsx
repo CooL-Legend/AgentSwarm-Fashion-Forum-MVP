@@ -116,7 +116,7 @@ export default function GalleryView() {
                 setHasMore(payload.hasMore);
                 setNextCursor(payload.nextCursor);
                 setImages((prev) => {
-                    const merged = new Map<string, ProductCardItem>();
+                    const merged = new Map<number, ProductCardItem>();
                     const base = reset ? [] : prev;
                     for (const item of base) {
                         merged.set(item.id, item);
