@@ -1,5 +1,5 @@
 export interface ProductCardItem {
-    id: number;
+    id: string;
     image_url: string;
     title: string | null;
     created_at: string | null;

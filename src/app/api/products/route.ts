@@ -5,13 +5,6 @@ import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types"
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 200;
 
-function parsePositiveInt(value: string | null): number | null {
-    if (!value) return null;
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return null;
-    return parsed;
-}
-
 function clampLimit(value: number | null): number {
     if (value == null) return DEFAULT_LIMIT;
     return Math.max(1, Math.min(MAX_LIMIT, value));
@@ -22,14 +15,16 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
 
     const q = searchParams.get("q")?.trim() || "";
-    const cursor = parsePositiveInt(searchParams.get("cursor"));
-    const limit = clampLimit(parsePositiveInt(searchParams.get("limit")));
+    const cursor = searchParams.get("cursor")?.trim() || null;
+    const limitParam = searchParams.get("limit");
+    const limit = clampLimit(limitParam ? Number.parseInt(limitParam, 10) : null);
 
     try {
         let query = supabaseServer
             .from("products")
             .select("id,image_url,title,created_at")
             .not("image_url", "is", null)
+            .order("created_at", { ascending: false })
             .order("id", { ascending: false })
             .limit(limit + 1);
 
@@ -58,13 +53,13 @@ export async function GET(req: NextRequest) {
         const hasMore = rows.length > limit;
         const pageRows = hasMore ? rows.slice(0, limit) : rows;
         const items: ProductCardItem[] = pageRows.map((row) => ({
-            id: Number(row.id),
+            id: row.id,
             image_url: row.image_url,
             title: row.title,
             created_at: row.created_at,
         }));
 
-        const nextCursor = hasMore && items.length > 0 ? String(items[items.length - 1].id) : null;
+        const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].id : null;
 
         const response: ProductsPageResponse = {
             items,
