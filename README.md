@@ -1,61 +1,33 @@
-Fashion  MVP
+# Fashion MVP
 
-Two-service app:
+A fashion inspiration and virtual try-on platform with an infinite-scroll product gallery, web scraping, Google AI-powered virtual try-on, and video generation.
 
-- Next.js app at repo root for UI
-- Go backend in `backend/` for runtime APIs
+## Architecture
 
-## What We Are Building
-
-- Infinite-scroll product gallery powered by Supabase `products`
-- Server-side search and keyset pagination via Go backend
-- Product-page image extraction for try-on input
-- Virtual try-on endpoint backed by Google VTO
-
-## Current Architecture
-
-- Frontend: Next.js App Router (`src/app`)
-- Backend: Go HTTP server (`backend/`)
-- Data source: Supabase `products` table
-
-Runtime API routes (served by Go):
-
-- `GET /api/products`
-- `POST /api/scrape`
-- `POST /api/tryon`
-- `GET /healthz`
-
-## Scraper Behavior
-
-Frontend calls backend `POST /api/scrape`, then backend:
-
-1. Proxies to `SCRAPER_URL` (Hugging Face Space API host).
-2. If upstream fails (for example returns 5xx), uses a built-in fallback extractor that pulls image candidates from HTML meta/img/source tags.
-
-Recommended scraper URL:
-
-- `https://varun2808-product-image-scraper.hf.space`
+| Layer | Tech | Location |
+|-------|------|----------|
+| Frontend | Next.js 16 (App Router), React 19, Tailwind CSS 4, TypeScript | `src/app/` |
+| Backend | Go HTTP server | `backend/` |
+| Database | Supabase (PostgreSQL) | Cloud |
+| External | Google Vertex AI (VTO), Hugging Face (scraper + video gen) | Cloud |
 
 ## Quick Start
 
-Prereqs:
+Prerequisites: Node.js + npm, Go (see `backend/go.mod`)
 
-- Node.js + npm
-- Go (see `backend/go.mod`)
-
-Install frontend deps:
+**Install frontend deps:**
 
 ```bash
 npm install
 ```
 
-Start backend (terminal 1):
+**Start backend (terminal 1):**
 
 ```bash
 ./run-backend.sh
 ```
 
-Start frontend (terminal 2):
+**Start frontend (terminal 2):**
 
 ```bash
 npm run dev
@@ -63,64 +35,140 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+## Features
+
+### Infinite-Scroll Gallery
+
+- Keyset pagination with `cursor` and `limit` params
+- Virtual windowing for efficient rendering of large datasets
+- Responsive grid: 2 columns (mobile) to 5 columns (desktop)
+- Debounced search with automatic pagination reset
+
+### Virtual Try-On
+
+- Upload a person photo and select a garment from the gallery
+- Powered by Google Vertex AI Virtual Try-On model
+- Returns generated composite image
+
+### Product Image Scraping
+
+- Paste any product URL to extract images
+- Proxies to a Hugging Face Space scraper
+- Built-in fallback extractor (meta tags, img/source elements) when upstream fails
+
+### Video Generation
+
+- Generates short fashion videos from product images
+- Uses Hugging Face Gradio client for 360-degree rotation and pose generation
+
+## API Routes
+
+### Go Backend (port 8080)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/products` | Paginated product listing from Supabase |
+| POST | `/api/scrape` | Proxy to HF scraper with fallback HTML extraction |
+| POST | `/api/tryon` | Google Vertex AI virtual try-on |
+| GET | `/healthz` | Health check |
+
+### Next.js API Routes
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/api/products` | Proxies to Go backend |
+| POST | `/api/scrape` | Proxies scraper request |
+| POST | `/api/tryon` | Proxies try-on request |
+| POST | `/api/generate-video` | HF Gradio video generation |
+
+### API Details
+
+**`GET /api/products?cursor=<id>&limit=<n>&q=<search>`**
+
+- Keyset pagination by `id` descending
+- Default `limit=100`, max `200`
+- Returns `{ items, nextCursor, hasMore, total }`
+
+**`POST /api/scrape`**
+
+- Body: `{ "url": "...", "max_images": 3 }`
+- Returns image candidates from upstream scraper or fallback extractor
+
+**`POST /api/tryon`**
+
+- Body: person image (base64) + garment image (base64 or URL)
+- Returns generated image when Google credentials are configured
+
+**`POST /api/generate-video`**
+
+- Body: `{ "image": "<base64>" }`
+- Returns base64-encoded MP4 video
+
+## Frontend Components
+
+| Component | Purpose |
+|-----------|---------|
+| `GalleryView` | Main infinite-scroll product grid with search and virtual windowing |
+| `GarmentInput` | Product selection via local search, image upload, or URL scraping |
+| `TryOnModal` | Person photo upload and virtual try-on result display |
+| `GalleryLightbox` | Full-screen image viewer with product details |
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `dev.sh` | Start Next.js dev server + localtunnel |
+| `run-backend.sh` | Run Go backend |
+| `seed-garments.js` | Seed Supabase `products` table from CSV sources (H&M, Westside, WROGN) |
+| `scripts/generate_vector.js` | Generate embedding vectors for products via HF API |
+
 ## Environment Variables
 
-Both frontend and backend read from repo-root `.env`.
+Both frontend and backend read from the repo-root `.env`.
 
-Required:
+### Required
 
-- `SUPABASE_URL` (or fallback `NEXT_PUBLIC_SUPABASE_URL`)
-- `SUPABASE_SERVICE_ROLE_KEY` (or fallback `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+- `SUPABASE_URL` (fallback: `NEXT_PUBLIC_SUPABASE_URL`)
+- `SUPABASE_SERVICE_ROLE_KEY` (fallback: `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
 
-Common:
+### Common
 
-- `NEXT_PUBLIC_BACKEND_API_BASE_URL` (defaults to `http://localhost:8080`)
-- `SCRAPER_URL` (use the `hf.space` host)
+- `NEXT_PUBLIC_BACKEND_API_BASE_URL` -- defaults to `http://localhost:8080`
+- `SCRAPER_URL` -- defaults to `https://varun2808-product-image-scraper.hf.space`
 
-Optional (try-on):
+### Optional (Virtual Try-On)
 
 - `GOOGLE_CLIENT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 - `GOOGLE_PROJECT_ID`
 
-## API Notes
+### Optional (Video Generation)
 
-`GET /api/products?cursor=<id>&limit=<n>&q=<optional>`
+- `HF_TOKEN`
 
-- Keyset pagination by `id` descending
-- Default `limit=100`, max `200`
-- Returns `items`, `nextCursor`, `hasMore`, `total`
+### Optional (Backend)
 
-`POST /api/scrape`
+- `BACKEND_PORT` -- defaults to `8080`
+- `BACKEND_CORS_ORIGIN` -- defaults to `*`
 
-- Body: `{ "url": "...", "max_images": 3 }`
-- Returns image candidates from upstream scraper or fallback extractor
+## Deployment
 
-`POST /api/tryon`
+### Frontend (Vercel)
 
-- Body includes person image + garment image (or garment URL)
-- Returns generated image payload when credentials are configured
-
-## Deployment Notes
-
-Frontend (Vercel):
-
-- Root Directory must be repo root (`.`)
+- Root directory: repo root (`.`)
 - Framework preset: Next.js
+- See `vercel.json` for build config
 
-Backend:
+### Backend
 
 - Deploy `backend/` as a Go service
-- Ensure env vars above are set in backend environment
+- Set all required env vars in the backend environment
 - Set `BACKEND_CORS_ORIGIN` to your frontend origin in production
 
 ## Troubleshooting
 
-`No Next.js version detected` on Vercel:
+**`No Next.js version detected` on Vercel:**
+Confirm the project Root Directory is the repo root where `package.json` includes `next`.
 
-- Confirm project Root Directory is repo root where `package.json` includes `next`
-
-`Scraper returned 500`:
-
-- Verify `SCRAPER_URL` is `https://varun2808-product-image-scraper.hf.space`
-- Upstream HF scraper may be temporarily unstable; backend fallback will still try to extract images directly from page HTML
+**`Scraper returned 500`:**
+Verify `SCRAPER_URL` is set correctly. The upstream HF scraper may be temporarily unstable -- the backend fallback will still extract images directly from page HTML.
