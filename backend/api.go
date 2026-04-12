@@ -100,17 +100,19 @@ func clampLimit(limit int) int {
 }
 
 type productRow struct {
-	ID        productID `json:"id"`
-	ImageURL  string    `json:"image_url"`
-	Title     *string   `json:"title"`
-	CreatedAt *string   `json:"created_at"`
+	ID           productID `json:"id"`
+	ImageURL     string    `json:"image_url"`
+	AllImageURLs []string  `json:"all_image_urls"`
+	Title        *string   `json:"title"`
+	CreatedAt    *string   `json:"created_at"`
 }
 
 type productCardItem struct {
-	ID        string  `json:"id"`
-	ImageURL  string  `json:"image_url"`
-	Title     *string `json:"title"`
-	CreatedAt *string `json:"created_at"`
+	ID           string   `json:"id"`
+	ImageURL     string   `json:"image_url"`
+	AllImageURLs []string `json:"all_image_urls"`
+	Title        *string  `json:"title"`
+	CreatedAt    *string  `json:"created_at"`
 }
 
 type productsPageResponse struct {
@@ -165,7 +167,7 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		q := u.Query()
-		q.Set("select", "id,image_url,title,created_at")
+		q.Set("select", "id,image_url,all_image_urls,title,created_at")
 		q.Set("image_url", "not.is.null")
 		q.Set("order", "id.desc")
 		q.Set("limit", strconv.Itoa(limit+1))
@@ -223,10 +225,11 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 				continue
 			}
 			items = append(items, productCardItem{
-				ID:        id,
-				ImageURL:  row.ImageURL,
-				Title:     row.Title,
-				CreatedAt: row.CreatedAt,
+				ID:           id,
+				ImageURL:     row.ImageURL,
+				AllImageURLs: row.AllImageURLs,
+				Title:        row.Title,
+				CreatedAt:    row.CreatedAt,
 			})
 		}
 

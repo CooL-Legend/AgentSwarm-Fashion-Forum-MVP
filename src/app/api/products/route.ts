@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
     try {
         let query = supabaseServer
             .from("products")
-            .select("id,image_url,title,created_at")
+            .select("id,image_url,all_image_urls,title,created_at")
             .not("image_url", "is", null)
             .order("created_at", { ascending: false })
             .order("id", { ascending: false })
@@ -55,6 +55,7 @@ export async function GET(req: NextRequest) {
         const items: ProductCardItem[] = pageRows.map((row) => ({
             id: row.id,
             image_url: row.image_url,
+            all_image_urls: row.all_image_urls ?? null,
             title: row.title,
             created_at: row.created_at,
         }));
