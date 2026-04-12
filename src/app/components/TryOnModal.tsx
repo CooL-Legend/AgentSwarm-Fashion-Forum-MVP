@@ -6,9 +6,10 @@ import { backendApiUrl } from "@/lib/backend-api";
 interface Props {
     garmentImageUrl: string;
     onClose: () => void;
+    onTryOnSubmit?: (personBase64: string) => void;
 }
 
-export default function TryOnModal({ garmentImageUrl, onClose }: Props) {
+export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: Props) {
     const [personPreview, setPersonPreview] = useState<string | null>(null);
     const [personBase64, setPersonBase64] = useState<string | null>(null);
     const [processing, setProcessing] = useState(false);
@@ -52,6 +53,13 @@ export default function TryOnModal({ garmentImageUrl, onClose }: Props) {
 
     const handleTryOn = async () => {
         if (!personBase64) return;
+
+        if (onTryOnSubmit) {
+            onTryOnSubmit(personBase64);
+            onClose();
+            return;
+        }
+
         setProcessing(true);
         setError(null);
         setResultImage(null);

@@ -12,7 +12,10 @@ import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
+import TryOnNotification from "./TryOnNotification";
+import TryOnResultModal from "./TryOnResultModal";
 import ProductCard from "./ProductCard";
+import { useTryOnTask } from "../hooks/useTryOnTask";
 
 const PAGE_LIMIT = 100;
 const VIRTUAL_ROW_HEIGHT = 320;
@@ -51,6 +54,9 @@ export default function GalleryView() {
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [hasMore, setHasMore] = useState(true);
     const [total] = useState<number | null>(null);
+
+    const [showTryOnResult, setShowTryOnResult] = useState(false);
+    const { task, startTryOn, dismiss } = useTryOnTask();
 
     const [viewportHeight, setViewportHeight] = useState(0);
     const [viewportWidth, setViewportWidth] = useState(0);
@@ -473,6 +479,31 @@ export default function GalleryView() {
                 <TryOnModal
                     garmentImageUrl={tryOnImage}
                     onClose={() => setTryOnImage(null)}
+                    onTryOnSubmit={(personBase64) => {
+                        startTryOn({ personBase64, garmentImageUrl: tryOnImage });
+                        setTryOnImage(null);
+                    }}
+                />
+            )}
+
+            {task && (
+                <TryOnNotification
+                    status={task.status}
+                    error={task.error}
+                    onView={() => setShowTryOnResult(true)}
+                    onDismiss={dismiss}
+                />
+            )}
+
+            {showTryOnResult && task?.status === "done" && task.resultImage && (
+                <TryOnResultModal
+                    personPreview={task.personPreview}
+                    garmentImageUrl={task.garmentUrl}
+                    resultImage={task.resultImage}
+                    onClose={() => {
+                        setShowTryOnResult(false);
+                        dismiss();
+                    }}
                 />
             )}
         </div>
