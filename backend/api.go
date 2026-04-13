@@ -676,7 +676,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		endpoint := fmt.Sprintf(
-			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict",
+			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict", // No gemini call in this -> google virtual tryon model
 			cfg.GoogleProjectID,
 		)
 

@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
+import { Manrope } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
+
+const manrope = Manrope({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Inspiration Board",
@@ -14,7 +17,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
+      <body className={`${manrope.className} min-h-screen bg-zinc-950 text-zinc-100 antialiased`}>
         <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md">
           <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
             <Link href="/" className="group flex items-center gap-3">
@@ -26,11 +29,21 @@ export default function RootLayout({
               </span>
             </Link>
 
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex items-center gap-3 text-xs">
               <span className="hidden text-zinc-500 sm:inline">Curated Visual Feed</span>
               <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
                 live
               </span>
+              <Link
+                href="/profile"
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-zinc-400 transition-colors hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-200"
+                title="Profile"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+                  <circle cx="12" cy="7" r="4" />
+                </svg>
+              </Link>
             </div>
           </div>
         </header>

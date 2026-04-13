@@ -45,3 +45,29 @@
 
 - API routes (`/api/tryon`) — the endpoint is unchanged; only the client-side calling pattern moved from inside the modal to the background hook.
 - `GarmentInput`, `GalleryLightbox`, `ProductCard` — unaffected.
+
+---
+
+# User Profile Page
+
+## What changed
+
+**Problem:** Users had no way to view their own profile information or showcase their visual content.
+
+**Solution:** Added a complete profile page that displays user information, hero visuals, contact details, and a visual gallery of their uploaded images.
+
+## Files created
+
+- **`src/app/api/users/route.ts`** — New API route that fetches user profile data from Supabase by first/last name (hardcoded for Aditya Bhandari).
+- **`src/app/components/ProfileView.tsx`** — Main profile page component with loading states, error handling, and skeleton UI.
+- **`src/app/components/ProfileHeader.tsx`** — Profile header with avatar, name, username, bio, and action buttons (share/edit).
+- **`src/app/components/HeroVisuals.tsx`** — Hero section displaying front/back profile images in a grid layout.
+- **`src/app/components/InformationGrid.tsx`** — Contact details and stats grid with icons for email, location, phone, gender, height.
+- **`src/app/components/VisualGallery.tsx`** — Image gallery component showing user's uploaded images with overflow indicator.
+- **`src/app/profile/page.tsx`** — Profile page route with dynamic rendering.
+- **`src/lib/user-types.ts`** — TypeScript interface defining the UserProfile structure.
+
+## Files modified
+
+- **`src/app/layout.tsx`** — Added Manrope font import and profile navigation link in header.
+- **`backend/api.go`** — Added clarifying comment about Google Vertex AI virtual try-on model.
