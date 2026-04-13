@@ -3,10 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "predev": "lsof -ti :3000 -ti :3001 -ti :3002 | xargs kill -9 2>/dev/null; rm -f .next/dev/lock",
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "run_backend": "./run-backend.sh",
+    "run_frontend": "npm --prefix frontend run dev",
+    "build_backend": "cd backend && go build ./...",
+    "build_frontend": "npm --prefix frontend run build",
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "install:frontend": "npm --prefix frontend install"
   },
   "dependencies": {
     "@gradio/client": "^2.1.0",

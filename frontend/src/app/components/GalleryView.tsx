@@ -12,6 +12,10 @@ import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
+import TryOnNotification from "./TryOnNotification";
+import TryOnResultModal from "./TryOnResultModal";
+import ProductCard from "./ProductCard";
+import { useTryOnTask } from "../hooks/useTryOnTask";
 
 const PAGE_LIMIT = 100;
 const VIRTUAL_ROW_HEIGHT = 320;
@@ -44,12 +48,15 @@ export default function GalleryView() {
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
-    const [lightbox, setLightbox] = useState<ProductCardItem | null>(null);
+    const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
     const [tryOnImage, setTryOnImage] = useState<string | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [hasMore, setHasMore] = useState(true);
     const [total] = useState<number | null>(null);
+
+    const [showTryOnResult, setShowTryOnResult] = useState(false);
+    const { task, startTryOn, dismiss } = useTryOnTask();
 
     const [viewportHeight, setViewportHeight] = useState(0);
     const [viewportWidth, setViewportWidth] = useState(0);
@@ -398,83 +405,15 @@ export default function GalleryView() {
                                     garmentSelection?.mode === "local" &&
                                     garmentSelection.localProduct?.id === img.id;
                                 return (
-                                    <button
-                                        type="button"
+                                    <ProductCard
                                         key={img.id}
-                                        onClick={() => {
-                                            setGarmentSelection({
-                                                mode: "local",
-                                                imageUrl: img.image_url,
-                                                localProduct: {
-                                                    id: img.id,
-                                                    title: img.title || undefined,
-                                                    image_url: img.image_url,
-                                                },
-                                            });
-                                        }}
-                                        onDoubleClick={() => setLightbox(img)}
-                                        className={`group relative h-[300px] overflow-hidden rounded-2xl border transition-all duration-300 ${
-                                            isSelected
-                                                ? "border-amber-400/60 ring-2 ring-amber-400/30"
-                                                : "border-zinc-800/70 hover:border-zinc-700"
-                                        } bg-zinc-900/80`}
-                                    >
-                                        <img
-                                            src={img.image_url}
-                                            alt={img.title || `Product image ${startIndex + index + 1}`}
-                                            loading="lazy"
-                                            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.015]"
-                                        />
-                                        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between bg-gradient-to-t from-black/70 to-transparent p-3 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                                            <span className="truncate text-xs font-medium text-white">
-                                                {img.title || "Untitled product"}
-                                            </span>
-                                            <span className="shrink-0 rounded-full bg-amber-500/20 px-2 py-0.5 text-[10px] font-medium text-amber-300">
-                                                {isSelected ? "Selected" : "Select"}
-                                            </span>
-                                        </div>
-                                        <div
-                                            className="pointer-events-auto absolute left-2 top-2 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
-                                            onClick={(event) => {
-                                                event.stopPropagation();
-                                                setTryOnImage(img.image_url);
-                                            }}
-                                        >
-                                            <span className="flex cursor-pointer items-center gap-1 rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-semibold text-black shadow-lg transition-colors hover:bg-amber-400">
-                                                <svg
-                                                    className="h-3 w-3"
-                                                    fill="none"
-                                                    viewBox="0 0 24 24"
-                                                    stroke="currentColor"
-                                                    strokeWidth={2.5}
-                                                >
-                                                    <path
-                                                        strokeLinecap="round"
-                                                        strokeLinejoin="round"
-                                                        d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0"
-                                                    />
-                                                </svg>
-                                                Try On
-                                            </span>
-                                        </div>
-                                        {isSelected && (
-                                            <div className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-amber-500 text-black">
-                                                <svg
-                                                    className="h-3.5 w-3.5"
-                                                    fill="none"
-                                                    viewBox="0 0 24 24"
-                                                    stroke="currentColor"
-                                                    strokeWidth={3}
-                                                >
-                                                    <path
-                                                        strokeLinecap="round"
-                                                        strokeLinejoin="round"
-                                                        d="M5 13l4 4L19 7"
-                                                    />
-                                                </svg>
-                                            </div>
-                                        )}
-                                    </button>
+                                        item={img}
+                                        isSelected={isSelected}
+                                        altIndex={startIndex + index + 1}
+                                        onClick={() =>
+                                            setLightbox({ item: img, initialIndex: 0 })
+                                        }
+                                    />
                                 );
                             })}
                         </div>
@@ -514,8 +453,25 @@ export default function GalleryView() {
 
             {lightbox && (
                 <GalleryLightbox
-                    image={lightbox}
+                    image={lightbox.item}
+                    initialIndex={lightbox.initialIndex}
                     onClose={() => setLightbox(null)}
+                    onSelect={(imageUrl) => {
+                        setGarmentSelection({
+                            mode: "local",
+                            imageUrl,
+                            localProduct: {
+                                id: lightbox.item.id,
+                                title: lightbox.item.title || undefined,
+                                image_url: imageUrl,
+                            },
+                        });
+                        setLightbox(null);
+                    }}
+                    onTryOn={(imageUrl) => {
+                        setTryOnImage(imageUrl);
+                        setLightbox(null);
+                    }}
                 />
             )}
 
@@ -523,6 +479,31 @@ export default function GalleryView() {
                 <TryOnModal
                     garmentImageUrl={tryOnImage}
                     onClose={() => setTryOnImage(null)}
+                    onTryOnSubmit={(personBase64) => {
+                        startTryOn({ personBase64, garmentImageUrl: tryOnImage });
+                        setTryOnImage(null);
+                    }}
+                />
+            )}
+
+            {task && (
+                <TryOnNotification
+                    status={task.status}
+                    error={task.error}
+                    onView={() => setShowTryOnResult(true)}
+                    onDismiss={dismiss}
+                />
+            )}
+
+            {showTryOnResult && task?.status === "done" && task.resultImage && (
+                <TryOnResultModal
+                    personPreview={task.personPreview}
+                    garmentImageUrl={task.garmentUrl}
+                    resultImage={task.resultImage}
+                    onClose={() => {
+                        setShowTryOnResult(false);
+                        dismiss();
+                    }}
                 />
             )}
         </div>

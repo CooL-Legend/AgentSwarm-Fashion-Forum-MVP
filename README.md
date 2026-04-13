@@ -1,51 +1,24 @@
-Fashion  MVP
+# Fashion MVP
 
-Two-service app:
+A fashion inspiration and virtual try-on platform with an infinite-scroll product gallery, scraping tools, Google-powered try-on/pose transfer, and backend-served APIs.
 
-- Next.js app at repo root for UI
-- Go backend in `backend/` for runtime APIs
+## Architecture
 
-## What We Are Building
-
-- Infinite-scroll product gallery powered by Supabase `products`
-- Server-side search and keyset pagination via Go backend
-- Product-page image extraction for try-on input
-- Virtual try-on endpoint backed by Google VTO
-
-## Current Architecture
-
-- Frontend: Next.js App Router (`src/app`)
-- Backend: Go HTTP server (`backend/`)
-- Data source: Supabase `products` table
-
-Runtime API routes (served by Go):
-
-- `GET /api/products`
-- `POST /api/scrape`
-- `POST /api/tryon`
-- `GET /healthz`
-
-## Scraper Behavior
-
-Frontend calls backend `POST /api/scrape`, then backend:
-
-1. Proxies to `SCRAPER_URL` (Hugging Face Space API host).
-2. If upstream fails (for example returns 5xx), uses a built-in fallback extractor that pulls image candidates from HTML meta/img/source tags.
-
-Recommended scraper URL:
-
-- `https://varun2808-product-image-scraper.hf.space`
+| Layer | Tech | Location |
+|-------|------|----------|
+| Frontend (UI only) | Next.js 16 (App Router), React 19, Tailwind CSS 4, TypeScript | `frontend/src/app/` |
+| Backend services/APIs | Go HTTP server | `backend/` |
+| Database | Supabase (PostgreSQL) | Cloud |
+| External services | Google Vertex AI, Gemini image generation, Hugging Face Spaces | Cloud |
 
 ## Quick Start
 
-Prereqs:
+Prerequisites: Node.js + npm, Go (see `backend/go.mod`)
 
-- Node.js + npm
-- Go (see `backend/go.mod`)
-
-Install frontend deps:
+Install frontend dependencies:
 
 ```bash
+cd frontend
 npm install
 ```
 
@@ -58,69 +31,96 @@ Start backend (terminal 1):
 Start frontend (terminal 2):
 
 ```bash
+cd frontend
 npm run dev
 ```
 
 Open `http://localhost:3000`.
 
+## Backend API (Go, port 8080)
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/healthz` | Health check |
+| GET | `/api/products` | Paginated product listing from Supabase |
+| POST | `/api/scrape` | HF scraper proxy with HTML fallback |
+| POST | `/api/tryon` | Google Vertex AI virtual try-on |
+| GET | `/api/users` | User profile lookup |
+| POST | `/api/pose-transfer` | Gemini pose transfer generation |
+| POST | `/api/generate-video` | HF Gradio queued video generation |
+
+### API Notes
+
+- `GET /api/products?cursor=<id>&limit=<n>&q=<search>`
+  - Keyset pagination by `id DESC`
+  - Default `limit=100`, max `200`
+  - Returns `{ items, nextCursor, hasMore, total }`
+- `POST /api/scrape`
+  - Body: `{ "url": "...", "max_images": 3 }`
+- `POST /api/tryon`
+  - Body: person image + garment image or garment URL
+- `POST /api/pose-transfer`
+  - Body: `{ "result_image": "<base64-or-data-url>", "pose_image": "<base64-or-data-url>" }`
+- `POST /api/generate-video`
+  - Body: `{ "image_base64": "<base64-or-data-url>", "gender": "male|female" }`
+
+## Frontend behavior
+
+Frontend components call backend directly through:
+
+- `NEXT_PUBLIC_BACKEND_API_BASE_URL` (default: `http://localhost:8080`)
+
+There are no Next.js route handlers in the frontend app.
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `./run-backend.sh` | Run Go backend |
+| `./dev.sh` | Start frontend dev server + localtunnel |
+| `npm run dev` (repo root) | Wrapper to `frontend` dev script |
+| `npm run build` (repo root) | Wrapper to `frontend` build script |
+
 ## Environment Variables
 
 Both frontend and backend read from repo-root `.env`.
 
-Required:
+### Required
 
-- `SUPABASE_URL` (or fallback `NEXT_PUBLIC_SUPABASE_URL`)
-- `SUPABASE_SERVICE_ROLE_KEY` (or fallback `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+- `SUPABASE_URL` (fallback: `NEXT_PUBLIC_SUPABASE_URL`)
+- `SUPABASE_SERVICE_ROLE_KEY` (fallback: `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
 
-Common:
+### Common
 
-- `NEXT_PUBLIC_BACKEND_API_BASE_URL` (defaults to `http://localhost:8080`)
-- `SCRAPER_URL` (use the `hf.space` host)
+- `NEXT_PUBLIC_BACKEND_API_BASE_URL` (default: `http://localhost:8080`)
+- `SCRAPER_URL` (default: `https://varun2808-product-image-scraper.hf.space`)
 
-Optional (try-on):
+### Google APIs
 
 - `GOOGLE_CLIENT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 - `GOOGLE_PROJECT_ID`
+- `GEMINI_MODEL` (optional, default: `gemini-3.1-flash-image-preview`)
 
-## API Notes
+### Hugging Face
 
-`GET /api/products?cursor=<id>&limit=<n>&q=<optional>`
+- `HF_TOKEN`
+- `HF_VIDEO_SPACE_URL` (optional, default: `https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space`)
 
-- Keyset pagination by `id` descending
-- Default `limit=100`, max `200`
-- Returns `items`, `nextCursor`, `hasMore`, `total`
+### Backend
 
-`POST /api/scrape`
+- `BACKEND_PORT` (default: `8080`)
+- `BACKEND_CORS_ORIGIN` (default: `*`)
 
-- Body: `{ "url": "...", "max_images": 3 }`
-- Returns image candidates from upstream scraper or fallback extractor
+## Deployment
 
-`POST /api/tryon`
+### Frontend (Vercel)
 
-- Body includes person image + garment image (or garment URL)
-- Returns generated image payload when credentials are configured
-
-## Deployment Notes
-
-Frontend (Vercel):
-
-- Root Directory must be repo root (`.`)
+- Root directory: `frontend`
 - Framework preset: Next.js
 
-Backend:
+### Backend
 
 - Deploy `backend/` as a Go service
-- Ensure env vars above are set in backend environment
+- Set all required env vars in backend environment
 - Set `BACKEND_CORS_ORIGIN` to your frontend origin in production
-
-## Troubleshooting
-
-`No Next.js version detected` on Vercel:
-
-- Confirm project Root Directory is repo root where `package.json` includes `next`
-
-`Scraper returned 500`:
-
-- Verify `SCRAPER_URL` is `https://varun2808-product-image-scraper.hf.space`
-- Upstream HF scraper may be temporarily unstable; backend fallback will still try to extract images directly from page HTML

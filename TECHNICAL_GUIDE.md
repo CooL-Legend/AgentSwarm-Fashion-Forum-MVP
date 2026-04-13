@@ -2,15 +2,18 @@
 
 ## Architecture
 
-- Frontend: Next.js App Router (`src/app`) for UI only
-- Backend: Go HTTP API (`backend/`) for all runtime backend behavior
+- Frontend: Next.js App Router UI in `frontend/src/app`
+- Backend: Go HTTP API in `backend/` for all runtime service behavior
 - Data source: Supabase `products` table
 - Runtime backend routes (served by Go on `:8080`):
-  - `GET /api/products` (Supabase pagination/search)
-  - `POST /api/scrape` (external scraper proxy)
-  - `POST /api/tryon` (Google VTO integration)
+  - `GET /api/products`
+  - `POST /api/scrape`
+  - `POST /api/tryon`
+  - `GET /api/users`
+  - `POST /api/pose-transfer`
+  - `POST /api/generate-video`
 
-No local JSON/forum persistence is used at runtime.
+No runtime backend logic lives in the frontend codebase.
 
 ## Product Pagination Contract
 
@@ -35,6 +38,7 @@ Response shape:
     {
       "id": "61394976-3e81-4125-b587-d6bc1e7da6cc",
       "image_url": "https://...",
+      "all_image_urls": ["https://..."],
       "title": "Product title",
       "created_at": "2026-03-29T10:00:00.000Z"
     }
@@ -54,9 +58,9 @@ Response shape:
 - Abort stale requests on new search/reset
 - Server-side search pagination (`q`), not in-memory full-dataset filtering
 - ID-based dedupe while appending pages
-- Windowed rendering (virtual row slicing + spacers) to keep DOM size manageable for large datasets
+- Windowed rendering (virtual row slicing + spacers) to keep DOM size manageable
 
-The frontend calls the Go backend directly through `NEXT_PUBLIC_BACKEND_API_BASE_URL` (default `http://localhost:8080`).
+Frontend calls backend directly through `NEXT_PUBLIC_BACKEND_API_BASE_URL` (default `http://localhost:8080`).
 
 ## Performance Notes (15,000 rows)
 

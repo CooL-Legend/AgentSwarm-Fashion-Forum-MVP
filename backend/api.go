@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -29,6 +30,7 @@ const (
 	maxProductsLimit     = 200
 	maxScrapeResponseLen = 2 * 1024 * 1024
 	maxPageHTMLBytes     = 4 * 1024 * 1024
+	maxVideoResponseLen  = 80 * 1024 * 1024
 )
 
 type configError struct {
@@ -100,17 +102,19 @@ func clampLimit(limit int) int {
 }
 
 type productRow struct {
-	ID        productID `json:"id"`
-	ImageURL  string    `json:"image_url"`
-	Title     *string   `json:"title"`
-	CreatedAt *string   `json:"created_at"`
+	ID           productID    `json:"id"`
+	ImageURL     string       `json:"image_url"`
+	AllImageURLs imageURLList `json:"all_image_urls"`
+	Title        *string      `json:"title"`
+	CreatedAt    *string      `json:"created_at"`
 }
 
 type productCardItem struct {
-	ID        string  `json:"id"`
-	ImageURL  string  `json:"image_url"`
-	Title     *string `json:"title"`
-	CreatedAt *string `json:"created_at"`
+	ID           string   `json:"id"`
+	ImageURL     string   `json:"image_url"`
+	AllImageURLs []string `json:"all_image_urls"`
+	Title        *string  `json:"title"`
+	CreatedAt    *string  `json:"created_at"`
 }
 
 type productsPageResponse struct {
@@ -122,6 +126,8 @@ type productsPageResponse struct {
 
 // productID supports both UUID string ids and numeric ids from Supabase payloads.
 type productID string
+
+type imageURLList []string
 
 func (id *productID) UnmarshalJSON(data []byte) error {
 	var asString string
@@ -141,6 +147,49 @@ func (id *productID) UnmarshalJSON(data []byte) error {
 
 func (id productID) String() string {
 	return strings.TrimSpace(string(id))
+}
+
+func (list *imageURLList) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "null" || trimmed == "" {
+		*list = nil
+		return nil
+	}
+
+	var asArray []string
+	if err := json.Unmarshal(data, &asArray); err == nil {
+		cleaned := make([]string, 0, len(asArray))
+		for _, candidate := range asArray {
+			candidate = strings.TrimSpace(candidate)
+			if candidate != "" {
+				cleaned = append(cleaned, candidate)
+			}
+		}
+		*list = cleaned
+		return nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(data, &asString); err == nil {
+		asString = strings.TrimSpace(asString)
+		if asString == "" {
+			*list = nil
+			return nil
+		}
+
+		parts := strings.Split(asString, "|")
+		cleaned := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				cleaned = append(cleaned, part)
+			}
+		}
+		*list = cleaned
+		return nil
+	}
+
+	return fmt.Errorf("unsupported all_image_urls type: %s", trimmed)
 }
 
 func productsHandler(cfg AppConfig) http.HandlerFunc {
@@ -165,7 +214,7 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		q := u.Query()
-		q.Set("select", "id,image_url,title,created_at")
+		q.Set("select", "id,image_url,all_image_urls,title,created_at")
 		q.Set("image_url", "not.is.null")
 		q.Set("order", "id.desc")
 		q.Set("limit", strconv.Itoa(limit+1))
@@ -223,10 +272,11 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 				continue
 			}
 			items = append(items, productCardItem{
-				ID:        id,
-				ImageURL:  row.ImageURL,
-				Title:     row.Title,
-				CreatedAt: row.CreatedAt,
+				ID:           id,
+				ImageURL:     row.ImageURL,
+				AllImageURLs: row.AllImageURLs,
+				Title:        row.Title,
+				CreatedAt:    row.CreatedAt,
 			})
 		}
 
@@ -251,6 +301,92 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 			len(search),
 			time.Since(startedAt).Milliseconds(),
 		)
+	}
+}
+
+type userProfile struct {
+	UserID              string   `json:"user_id"`
+	FirstName           *string  `json:"first_name"`
+	LastName            *string  `json:"last_name"`
+	Username            *string  `json:"username"`
+	Bio                 *string  `json:"bio"`
+	EmailID             *string  `json:"email_id"`
+	PhoneNumber         *string  `json:"phone_number"`
+	Location            *string  `json:"location"`
+	Sex                 *string  `json:"sex"`
+	Height              *string  `json:"height"`
+	FrontImage          *string  `json:"front_image"`
+	BackImage           *string  `json:"back_image"`
+	Images              []string `json:"images"`
+	CreatedAt           *string  `json:"created_at"`
+	UpdatedAt           *string  `json:"updated_at"`
+	OnboardingCompleted *bool    `json:"onboarding_completed"`
+}
+
+func usersHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		startedAt := time.Now()
+		u, err := url.Parse(strings.TrimRight(cfg.SupabaseURL, "/") + "/rest/v1/users")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
+			return
+		}
+
+		q := u.Query()
+		q.Set("select", "user_id,first_name,last_name,username,bio,email_id,phone_number,location,sex,height,front_image,back_image,images,created_at,updated_at,onboarding_completed")
+		q.Set("first_name", "eq.Aditya")
+		q.Set("last_name", "eq.Bhandari")
+		q.Set("limit", "1")
+		u.RawQuery = q.Encode()
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
+			return
+		}
+		req.Header.Set("apikey", cfg.SupabaseAPIKey)
+		req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+
+		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+		if err != nil {
+			log.Printf("[api/users] supabase_request_failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			log.Printf("[api/users] supabase_error status=%d body=%s", resp.StatusCode, string(body))
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
+			return
+		}
+
+		var rows []userProfile
+		if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+			log.Printf("[api/users] decode_failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
+			return
+		}
+
+		if len(rows) == 0 {
+			log.Printf("[api/users] not_found durationMs=%d", time.Since(startedAt).Milliseconds())
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found."})
+			return
+		}
+
+		user := rows[0]
+		if user.Images == nil {
+			user.Images = []string{}
+		}
+
+		log.Printf("[api/users] ok userId=%s durationMs=%d", user.UserID, time.Since(startedAt).Milliseconds())
+		writeJSON(w, http.StatusOK, map[string]any{"user": user})
 	}
 }
 
@@ -673,7 +809,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		endpoint := fmt.Sprintf(
-			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict",
+			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict", // No gemini call in this -> google virtual tryon model
 			cfg.GoogleProjectID,
 		)
 
@@ -757,6 +893,288 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			Success: true,
 			Image:   nil,
 			Raw:     firstPrediction,
+		})
+	}
+}
+
+const poseTransferPrompt = `You are given two input images:
+
+- Image 1 (Ground Truth / Source Image): the authoritative source for the person's identity, face, body shape, skin tone, hairstyle, and the exact garment appearance.
+- Image 2 (Pose Reference Image): use this image only for the target pose, body orientation, arm placement, leg placement, camera framing, and overall composition.
+
+## Task
+Generate a new image where:
+- the person and garment come from Image 1
+- the pose and body arrangement come from Image 2
+
+## Strict constraints
+1. Preserve identity from Image 1
+   - keep the same face
+   - keep the same hairstyle, skin tone, body proportions, and overall appearance
+   - do not change the person into someone else
+
+2. Preserve garment from Image 1 exactly
+   - keep the same garment type
+   - keep the same color
+   - keep the same print/pattern
+   - keep the same texture/material appearance
+   - keep the same fit, length, silhouette, sleeves, neckline, and garment details
+   - do not redesign, restyle, embellish, simplify, or replace the garment
+
+3. Use Image 2 only for pose
+   - transfer only the pose, body posture, limb placement, and viewpoint/composition
+   - do not copy the identity, face, hair, clothing, or background from Image 2
+
+4. Output requirements
+   - generate a realistic single-person image
+   - maintain natural anatomy
+   - maintain correct garment drape under the new pose
+   - preserve folds and tension in a realistic way
+   - avoid deformation, duplication of limbs, warped hands, broken garment edges, or inconsistent sleeves
+   - no extra garments, no accessories unless already present in Image 1
+   - no extra people
+
+5. Background behavior
+   - keep background clean and neutral unless explicitly instructed otherwise
+   - do not copy distracting background elements from either input unless required
+
+## Priority order
+If there is any conflict, follow this order:
+1. identity from Image 1
+2. garment fidelity from Image 1
+3. pose from Image 2
+4. clean realistic composition
+
+## Negative instructions
+Do not:
+- change the garment design
+- change garment colors
+- mix clothing from the two images
+- copy face/identity from Image 2
+- generate multiple people
+- crop out important garment regions
+- hallucinate unseen garment features unless absolutely required for pose realism
+
+## Final output
+Return one realistic pose-transferred image of the same person from Image 1 wearing the same garment from Image 1, but posed according to Image 2.`
+
+type poseTransferRequest struct {
+	ResultImage string `json:"result_image"`
+	PoseImage   string `json:"pose_image"`
+}
+
+func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if cfg.GoogleClientEmail == "" || cfg.GooglePrivateKey == "" || cfg.GoogleProjectID == "" {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Missing Google credentials"})
+			return
+		}
+
+		var input poseTransferRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON body"})
+			return
+		}
+
+		if strings.TrimSpace(input.ResultImage) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Result image is required"})
+			return
+		}
+		if strings.TrimSpace(input.PoseImage) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Pose image is required"})
+			return
+		}
+
+		accessToken, err := getAccessToken(r.Context(), cfg)
+		if err != nil {
+			log.Printf("[api/pose-transfer] access_token_failed: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "OAuth token request failed"})
+			return
+		}
+
+		model := strings.TrimSpace(cfg.GeminiModel)
+		if model == "" {
+			model = "gemini-3.1-flash-image-preview"
+		}
+
+		endpoint := fmt.Sprintf(
+			"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent",
+			cfg.GoogleProjectID,
+			model,
+		)
+
+		payload := map[string]any{
+			"contents": []any{
+				map[string]any{
+					"role": "user",
+					"parts": []any{
+						map[string]any{
+							"inlineData": map[string]any{
+								"mimeType": "image/png",
+								"data":     stripDataURL(input.ResultImage),
+							},
+						},
+						map[string]any{
+							"inlineData": map[string]any{
+								"mimeType": "image/png",
+								"data":     stripDataURL(input.PoseImage),
+							},
+						},
+						map[string]any{
+							"text": poseTransferPrompt,
+						},
+					},
+				},
+			},
+			"generationConfig": map[string]any{
+				"responseModalities": []string{"IMAGE", "TEXT"},
+			},
+		}
+
+		requestBody, err := json.Marshal(payload)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build pose transfer request"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(requestBody)))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build pose transfer request"})
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := (&http.Client{}).Do(req)
+		if err != nil {
+			log.Printf("[api/pose-transfer] upstream_request_failed: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Pose transfer service unavailable"})
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			writeJSON(w, resp.StatusCode, map[string]string{"error": "Gemini API error: " + string(body)})
+			return
+		}
+
+		var result map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Invalid response from Gemini API"})
+			return
+		}
+
+		mimeType, encodedImage := extractInlineGeneratedImage(result)
+		if strings.TrimSpace(encodedImage) == "" {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "No image generated by model"})
+			return
+		}
+		if strings.TrimSpace(mimeType) == "" {
+			mimeType = "image/png"
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"image":   fmt.Sprintf("data:%s;base64,%s", mimeType, encodedImage),
+		})
+	}
+}
+
+type generateVideoRequest struct {
+	ImageBase64 string `json:"image_base64"`
+	Gender      string `json:"gender"`
+}
+
+func generateVideoHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input generateVideoRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON body"})
+			return
+		}
+		if strings.TrimSpace(input.ImageBase64) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image_base64 is required"})
+			return
+		}
+		if strings.TrimSpace(cfg.HFToken) == "" {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "HF_TOKEN not configured"})
+			return
+		}
+
+		pronoun := "she"
+		if strings.EqualFold(strings.TrimSpace(input.Gender), "male") {
+			pronoun = "he"
+		}
+
+		prompt := fmt.Sprintf(
+			"Using the provided image as the starting frame, the subject performs a slow, perfectly smooth 360-degree rotation on a studio turntable. Action: The subject performs a slow, deliberate, and complete 360-degree pivot on the spot, showing the front, profile, and exact back of the outfit. Upon returning to the 0-degree front-facing position, %s fluidly transitions into dynamic fashion poses including a runway walk and a hand-on-hip stance. The garments are locked; the clothing features zero texture popping, zero morphing, and remains 100%% physically consistent from all angles. Camera: Locked-off, static tripod shot, eye-level. Environment: Infinite white cyc-wall studio with bright, softbox lighting. Highly detailed, photorealistic, flawless temporal consistency.",
+			pronoun,
+		)
+
+		startPayload := map[string]any{
+			"data": []any{
+				map[string]any{
+					"path":      nil,
+					"url":       normalizeImageDataURL(input.ImageBase64),
+					"orig_name": "input.png",
+					"mime_type": "image/png",
+					"is_stream": false,
+					"meta": map[string]any{
+						"_type": "gradio.FileData",
+					},
+				},
+				prompt,
+				6,
+				"色调艳丽, 过曝, 静态, 细节模糊不清, 字幕, 风格, 作品, 画作, 画面, 静止, 整体发灰, 最差质量, 低质量, JPEG压缩残留, 丑陋的, 残缺的, 多余的手指, 画得不好的手部, 画得不好的脸部, 畸形的, 毁容的, 形态畸形的肢体, 手指融合, 静止不动的画面, 杂乱的背景, 三条腿, 背景人很多, 倒着走",
+				5,
+				1,
+				1,
+				42,
+				true,
+			},
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 295*time.Second)
+		defer cancel()
+
+		eventID, err := startGradioVideoQueue(ctx, cfg, startPayload)
+		if err != nil {
+			log.Printf("[api/generate-video] queue_start_failed: %v", err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		videoURL, err := waitForGradioVideoURL(ctx, cfg, eventID)
+		if err != nil {
+			log.Printf("[api/generate-video] queue_wait_failed eventId=%s err=%v", eventID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+
+		videoBytes, err := fetchBinary(ctx, videoURL, 120*time.Second)
+		if err != nil {
+			log.Printf("[api/generate-video] fetch_video_failed url=%s err=%v", videoURL, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to fetch generated video"})
+			return
+		}
+
+		videoBase64 := base64.StdEncoding.EncodeToString(videoBytes)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"video": "data:video/mp4;base64," + videoBase64,
 		})
 	}
 }
@@ -944,6 +1362,216 @@ func cleanPrivateKey(raw string) string {
 	pemBuilder.WriteString("-----END PRIVATE KEY-----\n")
 
 	return pemBuilder.String()
+}
+
+func extractInlineGeneratedImage(payload map[string]any) (mimeType string, encoded string) {
+	candidates, _ := payload["candidates"].([]any)
+	for _, candidate := range candidates {
+		candidateMap, _ := candidate.(map[string]any)
+		contentMap, _ := candidateMap["content"].(map[string]any)
+		parts, _ := contentMap["parts"].([]any)
+		for _, part := range parts {
+			partMap, _ := part.(map[string]any)
+			inlineData, _ := partMap["inlineData"].(map[string]any)
+			mime, _ := inlineData["mimeType"].(string)
+			data, _ := inlineData["data"].(string)
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(mime)), "image/") && strings.TrimSpace(data) != "" {
+				return mime, data
+			}
+		}
+	}
+	return "", ""
+}
+
+func normalizeImageDataURL(input string) string {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(trimmed), "data:image/") {
+		return trimmed
+	}
+	return "data:image/png;base64," + stripDataURL(trimmed)
+}
+
+func startGradioVideoQueue(ctx context.Context, cfg AppConfig, payload map[string]any) (string, error) {
+	baseURL := strings.TrimRight(cfg.VideoSpaceURL, "/")
+	endpoint := baseURL + "/gradio_api/call/generate_video"
+
+	requestBody, err := json.Marshal(payload)
+	if err != nil {
+		return "", errors.New("failed to encode video request")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(requestBody)))
+	if err != nil {
+		return "", errors.New("failed to build video queue request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+cfg.HFToken)
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return "", errors.New("video queue unavailable")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode >= 400 {
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = "video queue request failed"
+		}
+		return "", errors.New(truncateText(msg, 260))
+	}
+
+	var queuePayload struct {
+		EventID string `json:"event_id"`
+	}
+	if err := json.Unmarshal(body, &queuePayload); err != nil {
+		return "", errors.New("invalid response from video queue")
+	}
+	if strings.TrimSpace(queuePayload.EventID) == "" {
+		return "", errors.New("video queue did not return event_id")
+	}
+	return queuePayload.EventID, nil
+}
+
+func waitForGradioVideoURL(ctx context.Context, cfg AppConfig, eventID string) (string, error) {
+	baseURL := strings.TrimRight(cfg.VideoSpaceURL, "/")
+	endpoint := fmt.Sprintf("%s/gradio_api/call/generate_video/%s", baseURL, url.PathEscape(strings.TrimSpace(eventID)))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", errors.New("failed to build video queue status request")
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+cfg.HFToken)
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return "", errors.New("video queue status unavailable")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = fmt.Sprintf("video queue status failed (%d)", resp.StatusCode)
+		}
+		return "", errors.New(truncateText(msg, 260))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	currentEvent := ""
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "event:") {
+			currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+
+		if currentEvent == "error" {
+			if payload == "null" {
+				return "", errors.New("video generation failed")
+			}
+			return "", errors.New("video generation failed: " + truncateText(payload, 220))
+		}
+
+		if videoURL := extractVideoURLFromGradioEvent(payload, baseURL); videoURL != "" {
+			return videoURL, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+
+	return "", errors.New("video generation stream ended without output")
+}
+
+func extractVideoURLFromGradioEvent(raw string, baseURL string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return normalizePossibleVideoURL(trimmed, baseURL)
+	}
+
+	return findVideoURLInAny(payload, baseURL)
+}
+
+func findVideoURLInAny(value any, baseURL string) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		preferred := []string{"url", "video", "output", "value", "path"}
+		for _, key := range preferred {
+			if nested, exists := typed[key]; exists {
+				if found := findVideoURLInAny(nested, baseURL); found != "" {
+					return found
+				}
+			}
+		}
+		for _, nested := range typed {
+			if found := findVideoURLInAny(nested, baseURL); found != "" {
+				return found
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if found := findVideoURLInAny(nested, baseURL); found != "" {
+				return found
+			}
+		}
+	case string:
+		return normalizePossibleVideoURL(typed, baseURL)
+	}
+	return ""
+}
+
+func normalizePossibleVideoURL(raw string, baseURL string) string {
+	value := strings.TrimSpace(strings.Trim(raw, "\""))
+	if value == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(value)
+	if !strings.Contains(lower, ".mp4") && !strings.Contains(lower, "gradio_api/file=") {
+		return ""
+	}
+
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return value
+	}
+
+	base, err := url.Parse(strings.TrimRight(baseURL, "/") + "/")
+	if err != nil {
+		return ""
+	}
+	relative, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+
+	return base.ResolveReference(relative).String()
 }
 
 func escapePostgrestLike(input string) string {
