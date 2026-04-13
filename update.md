@@ -1,3 +1,53 @@
+# Backend-Only Refactor + Canonical Frontend Move
+
+## What changed
+
+**Problem:** The repo had two frontend source trees (`src/` and `frontend/src/`) and backend logic split across Next.js route handlers and Go handlers, which caused drift and build/runtime confusion.
+
+**Solution:** Consolidated to a single frontend source tree (`frontend/src`) and moved all runtime backend APIs/services into the Go backend. Frontend now renders UI only and calls Go APIs directly through `NEXT_PUBLIC_BACKEND_API_BASE_URL`.
+
+## Files modified
+
+- **`backend/main.go`** — Added new config fields (`GEMINI_MODEL`, `HF_TOKEN`, `HF_VIDEO_SPACE_URL`) and registered additional API routes:
+  - `GET /api/users`
+  - `POST /api/pose-transfer`
+  - `POST /api/generate-video`
+- **`backend/api.go`** — Implemented:
+  - `usersHandler` (Supabase-backed profile fetch, returns `{ user }`)
+  - `poseTransferHandler` (Gemini image generation, returns `{ success, image }`)
+  - `generateVideoHandler` (HF Gradio queue flow via `/gradio_api/call/generate_video` + SSE polling, returns `{ video }`)
+  - Added robust `all_image_urls` decoding for products to support both array and pipe-delimited string DB formats.
+- **`frontend/src/lib/backend-api.ts`** — Kept as single API URL resolver for direct frontend -> Go backend calls.
+- **`frontend/src/lib/gallery-types.ts`** — Uses `all_image_urls` in shared product type/utility logic.
+- **`package.json` (repo root)** — Added root-level wrappers/scripts:
+  - `run_backend`
+  - `run_frontend`
+  - `build_backend`
+  - `build_frontend`
+  - Updated `dev/build/start` to run through `frontend`.
+- **`dev.sh`** — Updated to run Next.js from `frontend/` and use `frontend/.next` lock file.
+- **`vercel.json`** — Updated build/install/output paths to target `frontend` app ownership.
+- **`README.md`, `TECHNICAL_GUIDE.md`, `DOCUMENTATION.md`** — Updated architecture docs to frontend UI-only + backend-owned API model.
+
+## Files removed / migrated
+
+- **Removed frontend Next API routes:** `frontend/src/app/api/*` (products/scrape/tryon).
+- **Retired old root frontend tree:** `src/app/*` and `src/lib/*`.
+- **Canonical frontend location is now:** `frontend/src/app` and `frontend/src/lib`.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed.
+- **Frontend build:** `cd frontend && npm run build` passed.
+- **Root wrapper build:** `npm run build` passed (delegates to frontend).
+- **Backend smoke tests (localhost):**
+  - `GET /api/products` -> 200
+  - `GET /api/users` -> 200
+  - `POST /api/tryon`, `POST /api/pose-transfer`, `POST /api/generate-video` -> correct validation/error responses for test payloads
+  - `POST /api/scrape` reached backend path and returned upstream/fallback error shape as expected for test URL.
+
+---
+
 # Multi-Image Product Support
 
 ## What changed

@@ -17,6 +17,9 @@ type AppConfig struct {
 	GoogleClientEmail string
 	GooglePrivateKey  string
 	GoogleProjectID   string
+	GeminiModel       string
+	HFToken           string
+	VideoSpaceURL     string
 }
 
 func loadConfig() (AppConfig, error) {
@@ -29,6 +32,9 @@ func loadConfig() (AppConfig, error) {
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
+		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		HFToken:           stringsTrimQuotes(getenv("HF_TOKEN", "")),
+		VideoSpaceURL:     normalizeScraperURL(getenv("HF_VIDEO_SPACE_URL", "https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space")),
 	}
 
 	if cfg.SupabaseURL == "" || cfg.SupabaseAPIKey == "" {
@@ -84,6 +90,9 @@ func main() {
 	mux.HandleFunc("/api/products", withCORS(cfg, productsHandler(cfg)))
 	mux.HandleFunc("/api/scrape", withCORS(cfg, scrapeHandler(cfg)))
 	mux.HandleFunc("/api/tryon", withCORS(cfg, tryOnHandler(cfg)))
+	mux.HandleFunc("/api/users", withCORS(cfg, usersHandler(cfg)))
+	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
+	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
