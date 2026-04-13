@@ -71,3 +71,28 @@
 
 - **`src/app/layout.tsx`** — Added Manrope font import and profile navigation link in header.
 - **`backend/api.go`** — Added clarifying comment about Google Vertex AI virtual try-on model.
+
+---
+
+# Pose Transfer Module
+
+## What changed
+
+**Problem:** After a virtual try-on, the result image was locked to the original person's pose. Users had no way to see how the garment would look in a different pose (e.g. walking, arms raised, sitting).
+
+**Solution:** Added an optional pose transfer step after try-on. Users paste a URL to a pose reference image, and the system uses Gemini 3.1 Flash Image Preview to generate a new image preserving the person's identity and garment from the try-on result but adopting the pose from the reference image.
+
+## Files created
+
+- **`src/app/api/pose-transfer/route.ts`** — New API route that accepts the try-on result image (base64) and a pose reference URL. Fetches the pose image server-side, sends both images with a detailed pose transfer prompt to the Gemini `generateContent` API, parses the response for the generated image, and returns it as a data URL. Uses the same conventions as the tryon route (60s max duration, 50s abort timeout, consistent error shape).
+
+## Files modified
+
+- **`src/app/components/TryOnResultModal.tsx`** — Added pose transfer UI to the background try-on result modal. After viewing a completed try-on, a "Pose Transfer" section appears below the 3-column grid with a URL input and "Transfer Pose" button. The Result column toggles between the original try-on and pose-transferred output via a pill switcher. Download button dynamically points to whichever result is currently displayed. Error state shown inline.
+- **`src/app/components/TryOnModal.tsx`** — Added the same pose transfer UI in the inline try-on result view, with matching state, handler, toggle, and download behavior. "Try Another" resets all pose state.
+
+## No changes needed
+
+- API routes (`/api/tryon`) — the try-on endpoint is unchanged; pose transfer is a separate downstream step.
+- `TryOnNotification`, `GalleryView` — unaffected.
+- `.env` — `GEMINI_API_KEY` and `GEMINI_MODEL` were already configured.
