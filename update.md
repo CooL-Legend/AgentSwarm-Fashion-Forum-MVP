@@ -8,7 +8,7 @@
 
 ## Files modified
 
-- **`backend/main.go`** — Added new config fields (`GEMINI_MODEL`, `HF_TOKEN`, `HF_VIDEO_SPACE_URL`) and registered additional API routes:
+- **`backend/main.go`** — Added new config fields (`GEMINI_MODEL`, `HF_TOKEN`, `HF_VIDEO_SPACE_URL`) and registered additional API routes:q
   - `GET /api/users`
   - `POST /api/pose-transfer`
   - `POST /api/generate-video`
