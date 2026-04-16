@@ -5,6 +5,7 @@ export interface ProductCardItem {
     title: string | null;
     brand: string | null;
     price: number | null;
+    gender: string | null;
     created_at: string | null;
 }
 

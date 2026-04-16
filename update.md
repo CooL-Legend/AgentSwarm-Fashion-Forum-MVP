@@ -1,3 +1,25 @@
+# Gender-Based Product Filtering
+
+## What changed
+
+**Problem:** The gallery showed all products regardless of the user's gender, displaying irrelevant items (e.g. women's clothing for a male user).
+
+**Solution:** Added gender-based filtering to the products API. On gallery load, the user's `sex` field is fetched from the profile, mapped to the product gender convention (`male` -> `men`, `female` -> `women`), and passed as a query parameter. The backend filters products using a case-insensitive match to handle inconsistent DB casing (`Men`, `men`, `MAle`, etc.).
+
+## Files modified
+
+- **`backend/api.go`** — Added `gender` query param to `productsHandler`; applies PostgREST `ilike` filter for case-insensitive matching.
+- **`frontend/src/app/api/products/route.ts`** — Added `gender` query param support with Supabase `.ilike("gender", gender)` filter.
+- **`frontend/src/app/components/GalleryView.tsx`** — Fetches user profile on mount to resolve gender; maps `sex` values (`male`/`female`) to product gender values (`men`/`women`); passes gender param to products API; gates product fetching until gender is resolved. Reads from `data.user.sex` to match the `{ user: { ... } }` response shape.
+- **`frontend/src/lib/gallery-types.ts`** — Added `gender: string | null` to `ProductCardItem`.
+
+## Notes
+
+- If the user has no gender set, all products are shown (no filter applied).
+- The mapping handles the mismatch between user `sex` values (`male`/`female`) and product `gender` values (`Men`/`Women`).
+
+---
+
 # Product Metadata + Card UI Refresh
 
 ## What changed

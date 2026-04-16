@@ -48,6 +48,8 @@ export default function GalleryView() {
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [userGender, setUserGender] = useState<string | null>(null);
+    const [genderResolved, setGenderResolved] = useState(false);
     const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
     const [tryOnImage, setTryOnImage] = useState<string | null>(null);
@@ -70,6 +72,19 @@ export default function GalleryView() {
     const requestIdRef = useRef(0);
 
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
+
+    useEffect(() => {
+        fetch(backendApiUrl("/api/users"))
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+                const raw = data?.user?.sex ?? data?.sex;
+                const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+                const genderMap: Record<string, string> = { male: "men", female: "women" };
+                setUserGender(sex ? (genderMap[sex] ?? sex) : null);
+            })
+            .catch(() => setUserGender(null))
+            .finally(() => setGenderResolved(true));
+    }, []);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
@@ -102,6 +117,9 @@ export default function GalleryView() {
             }
             if (debouncedSearch) {
                 params.set("q", debouncedSearch);
+            }
+            if (userGender) {
+                params.set("gender", userGender);
             }
 
             try {
@@ -155,7 +173,7 @@ export default function GalleryView() {
                 }
             }
         },
-        [debouncedSearch],
+        [debouncedSearch, userGender],
     );
 
     useEffect(() => {
@@ -169,8 +187,10 @@ export default function GalleryView() {
         setImages([]);
         setHasMore(true);
         setNextCursor(null);
-        fetchProducts({ cursor: null, reset: true });
-    }, [debouncedSearch, fetchProducts]);
+        if (genderResolved) {
+            fetchProducts({ cursor: null, reset: true });
+        }
+    }, [debouncedSearch, fetchProducts, genderResolved]);
 
     useEffect(() => {
         return () => {

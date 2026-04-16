@@ -227,6 +227,11 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 			q.Set("title", "ilike.*"+escapePostgrestLike(search)+"*")
 		}
 
+		gender := strings.ToLower(strings.TrimSpace(query.Get("gender")))
+		if gender != "" {
+			q.Set("gender", "ilike."+gender)
+		}
+
 		u.RawQuery = q.Encode()
 
 		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)

@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
     const q = searchParams.get("q")?.trim() || "";
     const cursor = parsePositiveInt(searchParams.get("cursor"));
     const limit = clampLimit(parsePositiveInt(searchParams.get("limit")));
+    const gender = searchParams.get("gender")?.trim().toLowerCase() || "";
 
     try {
         let query = supabaseServer
@@ -39,6 +40,10 @@ export async function GET(req: NextRequest) {
 
         if (q) {
             query = query.ilike("title", `%${q}%`);
+        }
+
+        if (gender) {
+            query = query.ilike("gender", gender);
         }
 
         const { data, error } = await query;
