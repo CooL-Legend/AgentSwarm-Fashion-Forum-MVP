@@ -1,3 +1,75 @@
+# Clerk Google Sign-In + Onboarding on `user-temp`
+
+## What changed
+
+**Problem:** User identity and preferences were not authenticated end-to-end, onboarding was not enforced for new users, and profile reads/writes were tied to old hardcoded `users` flow.
+
+**Solution:** Added Clerk auth (Google-enabled sign-in/up), enforced authenticated user bootstrap + onboarding gate, and moved user profile/onboarding persistence to Supabase `public."user-temp"` as the active user source.
+
+## Files modified
+
+- **`backend/main.go`**
+  - Added `CLERK_SECRET_KEY` config support.
+  - Switched `GET /api/users` to authenticated current-user lookup.
+  - Added:
+    - `POST /api/users/bootstrap`
+    - `PATCH /api/users/onboarding`
+- **`backend/users_auth.go`** *(new)*
+  - Implemented Clerk bearer-token verification via JWKS.
+  - Added authenticated user handlers for bootstrap, current user, and onboarding updates.
+  - Added server-side onboarding validation for:
+    - basic profile (`first_name`, `last_name`, `username`, `age`, `sex`)
+    - onboarding fields (`occupation`, measurements, style prefs, fit frustrations, etc.)
+  - Writes/reads only against Supabase path `user-temp`.
+- **`backend/api.go`**
+  - Enabled `PATCH` in CORS preflight.
+  - Removed legacy hardcoded `usersHandler` implementation tied to `rest/v1/users`.
+- **`backend/sql/2026-04-16_user_temp_onboarding.sql`** *(new)*
+  - Added onboarding/profile columns on `public."user-temp"`:
+    - scalar: `age`, `occupation`, measurement fields, `visual_language`, `tshirt_fit`, `jeans_fit`
+    - arrays: `major_buys`, `seasonal_preferences`, `color_families`, `activity_profiles`, `fit_frustrations`
+    - flags/meta: `onboarding_skipped`, `onboarding_completed_at`, `onboarding_skipped_at`, `onboarding_version`
+- **`frontend/src/proxy.ts`** *(new; Next.js 16 proxy replacement)*
+  - Added Clerk route protection for `/gallery`, `/profile`, and `/onboarding`.
+- **`frontend/src/app/layout.tsx`**
+  - Wrapped app in `ClerkProvider`.
+  - Metadata updated to marketplace + try-on + pose-transfer scope.
+  - Header kept minimal with core nav (`Home`, `Marketplace`) and signed-out `Sign in`.
+- **`frontend/src/app/sign-in/[[...sign-in]]/page.tsx`** *(new)*
+- **`frontend/src/app/sign-up/[[...sign-up]]/page.tsx`** *(new)*
+  - Added styled Clerk auth entry pages with redirect to `/gallery`.
+- **`frontend/src/app/onboarding/page.tsx`** *(new)*
+  - Added 4-step onboarding flow with:
+    - Step 1: `first_name`, `last_name`, `username`, `age`, identity, visual language
+    - Step 2: occupation + body measurements
+    - Step 3: buying/season/fit/color/activity preferences
+    - Step 4: fit frustrations + review
+  - Added **Skip for now** behavior (`onboarding_skipped=true`).
+  - Added submit behavior (`onboarding_completed=true`).
+- **`frontend/src/lib/user-types.ts`**
+  - Extended `UserProfile` with onboarding columns.
+  - Added shared `OnboardingAnswers` DTO.
+- **`frontend/src/app/components/GalleryView.tsx`**
+- **`frontend/src/app/components/ProfileView.tsx`**
+  - Added auth-aware bootstrap + user load.
+  - Redirects incomplete users to `/onboarding`.
+- **`frontend/src/lib/supabase-server.ts`** *(new)*
+  - Added missing server Supabase helper used by frontend API routes.
+
+## Behavior changes
+
+- New authenticated users are bootstrapped into `user-temp`.
+- Incomplete users are redirected to `/onboarding`.
+- Skipped/completed users continue to `/gallery`.
+- `/api/users` now returns the **currently authenticated Clerk user** (no hardcoded user).
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed.
+- **Frontend build:** `cd frontend && npm run build` passed.
+
+---
+
 # Gender-Based Product Filtering
 
 ## What changed

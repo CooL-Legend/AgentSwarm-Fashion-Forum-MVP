@@ -9,6 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.2.1",
     "@supabase/supabase-js": "^2.97.0",
     "csv-parser": "^3.2.0",
     "dotenv": "^17.3.1",

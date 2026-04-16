@@ -7,6 +7,8 @@ import {
     useRef,
     useState,
 } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth, useUser } from "@clerk/nextjs";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
 import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
@@ -42,6 +44,10 @@ function columnsClass(columns: number): string {
 }
 
 export default function GalleryView() {
+    const router = useRouter();
+    const { isLoaded, isSignedIn, getToken } = useAuth();
+    const { user } = useUser();
+
     const [images, setImages] = useState<ProductCardItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
@@ -75,19 +81,80 @@ export default function GalleryView() {
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
 
     useEffect(() => {
-        fetch(backendApiUrl("/api/users"))
-            .then((res) => (res.ok ? res.json() : null))
-            .then((data) => {
-                const user = data?.user ?? data;
-                const raw = user?.sex;
+        if (!isLoaded) return;
+        if (!isSignedIn) {
+            router.replace("/sign-in");
+            return;
+        }
+
+        let cancelled = false;
+
+        const loadCurrentUser = async () => {
+            try {
+                const token = await getToken();
+                if (!token) throw new Error("Missing auth token");
+
+                await fetch(backendApiUrl("/api/users/bootstrap"), {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        first_name: user?.firstName ?? "",
+                        last_name: user?.lastName ?? "",
+                        username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
+                        email_id: user?.primaryEmailAddress?.emailAddress ?? "",
+                    }),
+                });
+
+                const response = await fetch(backendApiUrl("/api/users"), {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+                if (!response.ok) throw new Error("Failed to load user");
+
+                const payload = await response.json();
+                const appUser = payload?.user ?? payload;
+
+                const isComplete = appUser?.onboarding_completed === true;
+                const isSkipped = appUser?.onboarding_skipped === true;
+                if (!isComplete && !isSkipped) {
+                    router.replace("/onboarding");
+                    return;
+                }
+
+                const raw = appUser?.sex;
                 const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
-                const genderMap: Record<string, string> = { male: "men", female: "women" };
-                setUserGender(sex ? (genderMap[sex] ?? sex) : null);
-                if (user?.user_id) setUserId(user.user_id);
-            })
-            .catch(() => setUserGender(null))
-            .finally(() => setGenderResolved(true));
-    }, []);
+                const genderMap: Record<string, string> = {
+                    male: "men",
+                    female: "women",
+                    non_binary: "",
+                    prefer_not_to_say: "",
+                };
+                if (!cancelled) {
+                    setUserGender(sex ? (genderMap[sex] ?? sex) : null);
+                    if (appUser?.user_id) setUserId(appUser.user_id);
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setUserGender(null);
+                    setError(error instanceof Error ? error.message : "Failed to load user profile");
+                }
+            } finally {
+                if (!cancelled) {
+                    setGenderResolved(true);
+                }
+            }
+        };
+
+        loadCurrentUser();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [getToken, isLoaded, isSignedIn, router, user]);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {

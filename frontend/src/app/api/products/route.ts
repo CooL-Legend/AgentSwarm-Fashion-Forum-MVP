@@ -22,14 +22,14 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
 
     const q = searchParams.get("q")?.trim() || "";
-    const cursor = parsePositiveInt(searchParams.get("cursor"));
+    const cursor = searchParams.get("cursor")?.trim() || null;
     const limit = clampLimit(parsePositiveInt(searchParams.get("limit")));
     const gender = searchParams.get("gender")?.trim().toLowerCase() || "";
 
     try {
         let query = supabaseServer
             .from("products")
-            .select("id,image_url,title,brand,price,created_at")
+            .select("id,image_url,all_image_urls,title,brand,price,gender,created_at")
             .not("image_url", "is", null)
             .order("id", { ascending: false })
             .limit(limit + 1);
@@ -63,11 +63,13 @@ export async function GET(req: NextRequest) {
         const hasMore = rows.length > limit;
         const pageRows = hasMore ? rows.slice(0, limit) : rows;
         const items: ProductCardItem[] = pageRows.map((row) => ({
-            id: Number(row.id),
+            id: String(row.id),
             image_url: row.image_url,
+            all_image_urls: row.all_image_urls ?? null,
             title: row.title,
             brand: row.brand ?? null,
             price: row.price != null ? Number(row.price) : null,
+            gender: row.gender ?? null,
             created_at: row.created_at,
         }));
 

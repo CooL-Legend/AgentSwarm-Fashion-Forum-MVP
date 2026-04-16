@@ -13,6 +13,7 @@ type AppConfig struct {
 	CORSOrigin        string
 	SupabaseURL       string
 	SupabaseAPIKey    string
+	ClerkSecretKey    string
 	ScraperURL        string
 	GoogleClientEmail string
 	GooglePrivateKey  string
@@ -30,6 +31,7 @@ func loadConfig() (AppConfig, error) {
 		CORSOrigin:        getenv("BACKEND_CORS_ORIGIN", "*"),
 		SupabaseURL:       getenv("SUPABASE_URL", getenv("NEXT_PUBLIC_SUPABASE_URL", "")),
 		SupabaseAPIKey:    getenv("SUPABASE_SERVICE_ROLE_KEY", getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")),
+		ClerkSecretKey:    stringsTrimQuotes(getenv("CLERK_SECRET_KEY", "")),
 		ScraperURL:        normalizeScraperURL(getenv("SCRAPER_URL", "https://varun2808-product-image-scraper.hf.space")),
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
@@ -94,7 +96,9 @@ func main() {
 	mux.HandleFunc("/api/products", withCORS(cfg, productsHandler(cfg)))
 	mux.HandleFunc("/api/scrape", withCORS(cfg, scrapeHandler(cfg)))
 	mux.HandleFunc("/api/tryon", withCORS(cfg, tryOnHandler(cfg)))
-	mux.HandleFunc("/api/users", withCORS(cfg, usersHandler(cfg)))
+	mux.HandleFunc("/api/users", withCORS(cfg, currentUserHandler(cfg)))
+	mux.HandleFunc("/api/users/bootstrap", withCORS(cfg, bootstrapUserHandler(cfg)))
+	mux.HandleFunc("/api/users/onboarding", withCORS(cfg, onboardingUserHandler(cfg)))
 	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
 	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
 	mux.HandleFunc("/api/gcs-health", withCORS(cfg, gcsHealthHandler(cfg)))

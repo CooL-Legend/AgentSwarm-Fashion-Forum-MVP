@@ -53,7 +53,7 @@ func stringsTrimQuotes(value string) string {
 func withCORS(cfg AppConfig, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", cfg.CORSOrigin)
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
 		if r.Method == http.MethodOptions {
@@ -306,92 +306,6 @@ func productsHandler(cfg AppConfig) http.HandlerFunc {
 			len(search),
 			time.Since(startedAt).Milliseconds(),
 		)
-	}
-}
-
-type userProfile struct {
-	UserID              string   `json:"user_id"`
-	FirstName           *string  `json:"first_name"`
-	LastName            *string  `json:"last_name"`
-	Username            *string  `json:"username"`
-	Bio                 *string  `json:"bio"`
-	EmailID             *string  `json:"email_id"`
-	PhoneNumber         *string  `json:"phone_number"`
-	Location            *string  `json:"location"`
-	Sex                 *string  `json:"sex"`
-	Height              *string  `json:"height"`
-	FrontImage          *string  `json:"front_image"`
-	BackImage           *string  `json:"back_image"`
-	Images              []string `json:"images"`
-	CreatedAt           *string  `json:"created_at"`
-	UpdatedAt           *string  `json:"updated_at"`
-	OnboardingCompleted *bool    `json:"onboarding_completed"`
-}
-
-func usersHandler(cfg AppConfig) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		startedAt := time.Now()
-		u, err := url.Parse(strings.TrimRight(cfg.SupabaseURL, "/") + "/rest/v1/users")
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
-			return
-		}
-
-		q := u.Query()
-		q.Set("select", "user_id,first_name,last_name,username,bio,email_id,phone_number,location,sex,height,front_image,back_image,images,created_at,updated_at,onboarding_completed")
-		q.Set("first_name", "eq.Aditya")
-		q.Set("last_name", "eq.Bhandari")
-		q.Set("limit", "1")
-		u.RawQuery = q.Encode()
-
-		req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
-			return
-		}
-		req.Header.Set("apikey", cfg.SupabaseAPIKey)
-		req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
-
-		resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
-		if err != nil {
-			log.Printf("[api/users] supabase_request_failed: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
-			return
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 400 {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			log.Printf("[api/users] supabase_error status=%d body=%s", resp.StatusCode, string(body))
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
-			return
-		}
-
-		var rows []userProfile
-		if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
-			log.Printf("[api/users] decode_failed: %v", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Users API unavailable."})
-			return
-		}
-
-		if len(rows) == 0 {
-			log.Printf("[api/users] not_found durationMs=%d", time.Since(startedAt).Milliseconds())
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found."})
-			return
-		}
-
-		user := rows[0]
-		if user.Images == nil {
-			user.Images = []string{}
-		}
-
-		log.Printf("[api/users] ok userId=%s durationMs=%d", user.UserID, time.Since(startedAt).Milliseconds())
-		writeJSON(w, http.StatusOK, map[string]any{"user": user})
 	}
 }
 
