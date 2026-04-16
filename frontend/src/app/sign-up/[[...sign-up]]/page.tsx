@@ -1,6 +1,7 @@
 import { SignUp } from "@clerk/nextjs";
 
 export default function SignUpPage() {
+<<<<<<< HEAD
     return (
         <main className="mx-auto flex min-h-[calc(100vh-56px)] max-w-7xl items-center justify-center px-4 py-10">
             <div className="w-full max-w-md rounded-3xl border border-zinc-800 bg-zinc-900/65 p-4 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
@@ -24,4 +25,11 @@ export default function SignUpPage() {
             </div>
         </main>
     );
+=======
+  return (
+    <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 py-10">
+      <SignUp />
+    </div>
+  );
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 }

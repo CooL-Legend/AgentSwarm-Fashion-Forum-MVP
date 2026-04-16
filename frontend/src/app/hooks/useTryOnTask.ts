@@ -7,6 +7,10 @@ interface TryOnTaskInput {
     personBase64: string;
     garmentImageUrl: string;
     userId?: string;
+<<<<<<< HEAD
+=======
+    garmentId?: string;
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 }
 
 export type TryOnStatus = "processing" | "done" | "error";
@@ -57,7 +61,12 @@ export function useTryOnTask() {
             body: JSON.stringify({
                 person_image: input.personBase64,
                 cloth_image_url: input.garmentImageUrl,
+<<<<<<< HEAD
                 ...(input.userId ? { user_id: input.userId } : {}),
+=======
+                user_id: input.userId,
+                garment_id: input.garmentId,
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
             }),
             signal: controller.signal,
         })

@@ -18,6 +18,7 @@ import TryOnNotification from "./TryOnNotification";
 import TryOnResultModal from "./TryOnResultModal";
 import ProductCard from "./ProductCard";
 import { useTryOnTask } from "../hooks/useTryOnTask";
+import { useUser } from "@clerk/nextjs";
 
 const PAGE_LIMIT = 100;
 const VIRTUAL_ROW_HEIGHT = 320;
@@ -59,13 +60,14 @@ export default function GalleryView() {
     const [genderResolved, setGenderResolved] = useState(false);
     const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
-    const [tryOnImage, setTryOnImage] = useState<string | null>(null);
+    const [tryOnImage, setTryOnImage] = useState<{ imageUrl: string; garmentId?: string } | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [hasMore, setHasMore] = useState(true);
     const [total] = useState<number | null>(null);
 
     const [showTryOnResult, setShowTryOnResult] = useState(false);
     const { task, startTryOn, dismiss } = useTryOnTask();
+    const { user } = useUser();
 
     const [viewportHeight, setViewportHeight] = useState(0);
     const [viewportWidth, setViewportWidth] = useState(0);
@@ -413,7 +415,7 @@ export default function GalleryView() {
                                 <p className="text-[10px] text-zinc-500">Click &quot;Try On&quot; to see it on you</p>
                             </div>
                             <button
-                                onClick={() => setTryOnImage(garmentSelection.imageUrl!)}
+                                onClick={() => setTryOnImage({ imageUrl: garmentSelection.imageUrl!, garmentId: garmentSelection.localProduct?.id !== undefined ? String(garmentSelection.localProduct.id) : undefined })}
                                 className="shrink-0 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-amber-400"
                             >
                                 Try On
@@ -564,8 +566,8 @@ export default function GalleryView() {
                         });
                         setLightbox(null);
                     }}
-                    onTryOn={(imageUrl) => {
-                        setTryOnImage(imageUrl);
+                    onTryOn={(imageUrl, garmentId) => {
+                        setTryOnImage({ imageUrl, garmentId });
                         setLightbox(null);
                     }}
                 />
@@ -573,13 +575,19 @@ export default function GalleryView() {
 
             {tryOnImage && (
                 <TryOnModal
-                    garmentImageUrl={tryOnImage}
+                    garmentImageUrl={tryOnImage.imageUrl}
                     onClose={() => setTryOnImage(null)}
                     onTryOnSubmit={(personBase64) => {
                         startTryOn({
                             personBase64,
+<<<<<<< HEAD
                             garmentImageUrl: tryOnImage,
                             ...(userId ? { userId } : {}),
+=======
+                            garmentImageUrl: tryOnImage.imageUrl,
+                            userId: user?.id,
+                            garmentId: tryOnImage.garmentId,
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
                         });
                         setTryOnImage(null);
                     }}

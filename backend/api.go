@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -672,6 +673,10 @@ type tryOnRequest struct {
 	ClothImage    string `json:"cloth_image"`
 	ClothImageURL string `json:"cloth_image_url"`
 	UserID        string `json:"user_id"`
+<<<<<<< HEAD
+=======
+	GarmentID     string `json:"garment_id"`
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 }
 
 type tryOnResponse struct {
@@ -804,6 +809,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		firstPrediction := predictions[0]
 		outputImage := extractPredictionImage(firstPrediction)
 		if outputImage != "" {
+<<<<<<< HEAD
 			resp := tryOnResponse{
 				Success: true,
 				Image:   "data:image/png;base64," + outputImage,
@@ -830,6 +836,14 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			}
 
 			writeJSON(w, http.StatusOK, resp)
+=======
+			resultDataURL := "data:image/png;base64," + outputImage
+			writeJSON(w, http.StatusOK, tryOnResponse{
+				Success: true,
+				Image:   resultDataURL,
+			})
+			saveTryOnSession(cfg, input.UserID, input.GarmentID, input.PersonImage, outputImage, "google/virtual-try-on-001")
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 			return
 		}
 
@@ -1030,6 +1044,7 @@ func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
 		respPayload := map[string]any{
 			"success": true,
 			"image":   fmt.Sprintf("data:%s;base64,%s", mimeType, encodedImage),
+<<<<<<< HEAD
 		}
 
 		// Store to GCS when user_id is present
@@ -1053,6 +1068,11 @@ func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, respPayload)
+=======
+		})
+
+		savePoseTransferSession(cfg, input.UserID, input.PoseImage, encodedImage, mimeType, model)
+>>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 	}
 }
 
@@ -1548,4 +1568,316 @@ func escapePostgrestLike(input string) string {
 		"_", `\_`,
 	)
 	return replacer.Replace(input)
+}
+
+// ─── GCS storage paths ────────────────────────────────────────────────────────
+
+func userObjectPath(userID, kind, filename string) string {
+	return fmt.Sprintf("users/%s/%s/%s", userID, kind, filename)
+}
+
+func userSessionPath(userID, sessionID, filename string) string {
+	return fmt.Sprintf("users/%s/tryon/%s/%s", userID, sessionID, filename)
+}
+
+func newAssetFilename(ext string) string {
+	return fmt.Sprintf("%s_%s%s", time.Now().UTC().Format("20060102"), randomID(), ext)
+}
+
+func randomID() string {
+	buf := make([]byte, 8)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
+}
+
+// ─── Upload asset endpoint (input / pose) ─────────────────────────────────────
+
+type uploadAssetRequest struct {
+	UserID    string `json:"user_id"`
+	Kind      string `json:"kind"`
+	Image     string `json:"image"`
+	GarmentID string `json:"garment_id"`
+}
+
+func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input uploadAssetRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON body"})
+			return
+		}
+
+		input.UserID = strings.TrimSpace(input.UserID)
+		input.Kind = strings.TrimSpace(input.Kind)
+		if input.UserID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+		if input.Kind != "input" && input.Kind != "pose" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kind must be 'input' or 'pose'"})
+			return
+		}
+		if strings.TrimSpace(input.Image) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image is required"})
+			return
+		}
+
+		mimeType, ext := detectImageMimeAndExt(input.Image)
+		objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
+
+		if err := gcsUploadBase64(r.Context(), cfg, objectPath, mimeType, input.Image); err != nil {
+			log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", input.UserID, input.Kind, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Storage upload failed"})
+			return
+		}
+
+		log.Printf("[api/upload-asset] ok user=%s kind=%s path=%s", input.UserID, input.Kind, objectPath)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"object_path": objectPath,
+			"gs_uri":      "gs://" + gcsBucket + "/" + objectPath,
+		})
+	}
+}
+
+// ─── Upload profile.md endpoint ──────────────────────────────────────────────
+
+type uploadProfileRequest struct {
+	UserID  string `json:"user_id"`
+	Content string `json:"content"`
+}
+
+func uploadProfileHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var input uploadProfileRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON body"})
+			return
+		}
+
+		input.UserID = strings.TrimSpace(input.UserID)
+		if input.UserID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+		if strings.TrimSpace(input.Content) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "content is required"})
+			return
+		}
+
+		objectPath := fmt.Sprintf("users/%s/profile.md", input.UserID)
+		if err := gcsUpload(r.Context(), cfg, objectPath, "text/markdown", []byte(input.Content)); err != nil {
+			log.Printf("[api/upload-profile] upload_failed user=%s err=%v", input.UserID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Profile upload failed"})
+			return
+		}
+
+		log.Printf("[api/upload-profile] ok user=%s path=%s", input.UserID, objectPath)
+		writeJSON(w, http.StatusOK, map[string]string{
+			"object_path": objectPath,
+			"gs_uri":      "gs://" + gcsBucket + "/" + objectPath,
+		})
+	}
+}
+
+// ─── List user's assets with signed URLs ─────────────────────────────────────
+
+type userAssetItem struct {
+	ObjectPath string `json:"object_path"`
+	Kind       string `json:"kind"`
+	SessionID  string `json:"session_id,omitempty"`
+	SignedURL  string `json:"signed_url"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	Size       string `json:"size,omitempty"`
+}
+
+func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+		kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
+		if userID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+			return
+		}
+
+		prefix := fmt.Sprintf("users/%s/", userID)
+		if kindFilter != "" {
+			prefix = fmt.Sprintf("users/%s/%s/", userID, kindFilter)
+		}
+
+		objects, err := gcsList(r.Context(), cfg, prefix)
+		if err != nil {
+			log.Printf("[api/user-assets] list_failed user=%s err=%v", userID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to list assets"})
+			return
+		}
+
+		items := make([]userAssetItem, 0, len(objects))
+		for _, obj := range objects {
+			kind, sessionID := classifyObjectPath(userID, obj.Name)
+			signedURL, err := gcsSignedURL(cfg, obj.Name, time.Hour)
+			if err != nil {
+				log.Printf("[api/user-assets] sign_failed path=%s err=%v", obj.Name, err)
+				continue
+			}
+			items = append(items, userAssetItem{
+				ObjectPath: obj.Name,
+				Kind:       kind,
+				SessionID:  sessionID,
+				SignedURL:  signedURL,
+				UpdatedAt:  obj.Updated,
+				Size:       obj.Size,
+			})
+		}
+
+		log.Printf("[api/user-assets] ok user=%s kind=%s count=%d", userID, kindFilter, len(items))
+		writeJSON(w, http.StatusOK, map[string]any{"assets": items})
+	}
+}
+
+// classifyObjectPath parses "users/{uid}/{kind}/..." and returns (kind, sessionID).
+func classifyObjectPath(userID, objectName string) (string, string) {
+	prefix := "users/" + userID + "/"
+	rest := strings.TrimPrefix(objectName, prefix)
+	if rest == objectName {
+		return "", ""
+	}
+	if rest == "profile.md" {
+		return "profile", ""
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) == 0 {
+		return "", ""
+	}
+	kind := parts[0]
+	if kind == "tryon" && len(parts) >= 2 {
+		return "tryon", parts[1]
+	}
+	return kind, ""
+}
+
+// ─── Auto-save helpers for tryon and pose-transfer sessions ──────────────────
+
+// saveTryOnSession uploads the raw person image, the tryon result, and a meta.json
+// into gs://agent_swarm/users/{uid}/tryon/{session_id}/ — fire-and-forget.
+func saveTryOnSession(cfg AppConfig, userID, garmentID, personB64, resultB64, model string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	sessionID := randomID()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		// Save input (raw person photo) — shared under input/ for this session reference
+		inputPath := userObjectPath(userID, "input", newAssetFilename(".png"))
+		if err := gcsUploadBase64(ctx, cfg, inputPath, "image/png", personB64); err != nil {
+			log.Printf("[save/tryon] input_upload_failed user=%s err=%v", userID, err)
+		}
+
+		// Save try-on result under tryon/{session_id}/result.png
+		resultPath := userSessionPath(userID, sessionID, "result.png")
+		if err := gcsUploadBase64(ctx, cfg, resultPath, "image/png", resultB64); err != nil {
+			log.Printf("[save/tryon] result_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
+			return
+		}
+
+		// Save meta.json
+		meta := map[string]any{
+			"user_id":      userID,
+			"session_id":   sessionID,
+			"kind":         "tryon",
+			"garment_id":   garmentID,
+			"model":        model,
+			"input_path":   inputPath,
+			"result_path":  resultPath,
+			"created_at":   time.Now().UTC().Format(time.RFC3339),
+		}
+		metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+		metaPath := userSessionPath(userID, sessionID, "meta.json")
+		if err := gcsUpload(ctx, cfg, metaPath, "application/json", metaBytes); err != nil {
+			log.Printf("[save/tryon] meta_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
+		}
+		log.Printf("[save/tryon] ok user=%s session=%s", userID, sessionID)
+	}()
+}
+
+// savePoseTransferSession uploads the pose reference + final pose-transferred image
+// plus a meta.json — fire-and-forget.
+func savePoseTransferSession(cfg AppConfig, userID, poseB64, resultB64, mimeType, model string) {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return
+	}
+	sessionID := randomID()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		posePath := userObjectPath(userID, "pose", newAssetFilename(".png"))
+		if err := gcsUploadBase64(ctx, cfg, posePath, "image/png", poseB64); err != nil {
+			log.Printf("[save/pose] pose_upload_failed user=%s err=%v", userID, err)
+		}
+
+		ext := ".png"
+		if strings.EqualFold(mimeType, "image/jpeg") {
+			ext = ".jpg"
+		}
+		resultPath := userSessionPath(userID, sessionID, "result"+ext)
+		if err := gcsUploadBase64(ctx, cfg, resultPath, mimeType, resultB64); err != nil {
+			log.Printf("[save/pose] result_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
+			return
+		}
+
+		meta := map[string]any{
+			"user_id":     userID,
+			"session_id":  sessionID,
+			"kind":        "pose-transfer",
+			"model":       model,
+			"pose_path":   posePath,
+			"result_path": resultPath,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
+		}
+		metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+		metaPath := userSessionPath(userID, sessionID, "meta.json")
+		if err := gcsUpload(ctx, cfg, metaPath, "application/json", metaBytes); err != nil {
+			log.Printf("[save/pose] meta_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
+		}
+		log.Printf("[save/pose] ok user=%s session=%s", userID, sessionID)
+	}()
+}
+
+// detectImageMimeAndExt returns (mimeType, fileExtension) from a data URL or default PNG.
+func detectImageMimeAndExt(b64data string) (string, string) {
+	trimmed := strings.TrimSpace(b64data)
+	if strings.HasPrefix(trimmed, "data:") {
+		if end := strings.Index(trimmed, ";"); end > 5 {
+			mime := trimmed[5:end]
+			switch mime {
+			case "image/jpeg":
+				return mime, ".jpg"
+			case "image/webp":
+				return mime, ".webp"
+			}
+			return mime, ".png"
+		}
+	}
+	return "image/png", ".png"
 }

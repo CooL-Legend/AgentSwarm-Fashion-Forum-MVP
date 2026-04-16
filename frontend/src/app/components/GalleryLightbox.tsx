@@ -9,7 +9,7 @@ interface Props {
     initialIndex?: number;
     onClose: () => void;
     onSelect: (imageUrl: string) => void;
-    onTryOn: (imageUrl: string) => void;
+    onTryOn: (imageUrl: string, garmentId?: string) => void;
 }
 
 export default function GalleryLightbox({ image, initialIndex = 0, onClose, onSelect, onTryOn }: Props) {
@@ -144,7 +144,7 @@ export default function GalleryLightbox({ image, initialIndex = 0, onClose, onSe
                                 Select
                             </button>
                             <button
-                                onClick={() => onTryOn(images[currentIndex])}
+                                onClick={() => onTryOn(images[currentIndex], String(image.id))}
                                 className="flex items-center gap-1.5 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-amber-400"
                             >
                                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
