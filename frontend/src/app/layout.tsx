@@ -41,6 +41,11 @@ export default async function RootLayout({
                 <Link href="/gallery" className="transition-colors hover:text-zinc-100">
                   Marketplace
                 </Link>
+                {userId && (
+                  <Link href="/profile" className="transition-colors hover:text-zinc-100">
+                    Profile
+                  </Link>
+                )}
               </nav>
 
               {!userId && (
