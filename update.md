@@ -1,3 +1,29 @@
+# Product Metadata + Card UI Refresh
+
+## What changed
+
+**Problem:** Gallery cards only surfaced a product title, and `/api/products` did not return brand or price fields needed for a richer storefront-style card.
+
+**Solution:** Extended the frontend product model and products API response to include `brand` and `price`, then updated card presentation to show brand/title/price persistently with a cleaner selected state indicator.
+
+## Files modified
+
+- **`frontend/src/app/api/products/route.ts`** — Expanded Supabase select to `id,image_url,title,brand,price,created_at`; mapped `brand` as nullable string and `price` as nullable number.
+- **`frontend/src/lib/gallery-types.ts`** — Added `brand` and `price` to `ProductCardItem`.
+- **`frontend/src/app/components/ProductCard.tsx`** — Refactored card UI:
+  - Added INR price formatter (`Intl.NumberFormat`).
+  - Switched to a fixed 4:5 media area with persistent metadata section.
+  - Displayed optional brand label and optional price text.
+  - Kept selection behavior but moved to a stronger top-right check badge.
+- **`frontend/src/app/components/GalleryView.tsx`** — Updated loading skeleton card height from `300px` to `360px` to better match new card proportions during fetch states.
+
+## Notes
+
+- This update is frontend-only and does not change backend Go handlers.
+- Existing gallery selection/lightbox flow remains intact; this pass focuses on metadata flow + visual card polish.
+
+---
+
 # Backend-Only Refactor + Canonical Frontend Move
 
 ## What changed
