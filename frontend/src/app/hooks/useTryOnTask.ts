@@ -6,6 +6,8 @@ import { backendApiUrl } from "@/lib/backend-api";
 interface TryOnTaskInput {
     personBase64: string;
     garmentImageUrl: string;
+    userId?: string;
+    garmentId?: string;
 }
 
 export type TryOnStatus = "processing" | "done" | "error";
@@ -52,6 +54,8 @@ export function useTryOnTask() {
             body: JSON.stringify({
                 person_image: input.personBase64,
                 cloth_image_url: input.garmentImageUrl,
+                user_id: input.userId,
+                garment_id: input.garmentId,
             }),
             signal: controller.signal,
         })
