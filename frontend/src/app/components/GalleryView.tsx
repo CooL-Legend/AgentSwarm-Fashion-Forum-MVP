@@ -338,7 +338,7 @@ export default function GalleryView() {
                     {Array.from({ length: 12 }).map((_, index) => (
                         <div
                             key={index}
-                            className="h-[300px] animate-pulse rounded-2xl bg-zinc-800/60"
+                            className="h-[360px] animate-pulse rounded-2xl bg-zinc-800/60"
                             style={{ animationDelay: `${index * 60}ms` }}
                         />
                     ))}

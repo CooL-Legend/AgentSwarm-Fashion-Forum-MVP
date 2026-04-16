@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
     try {
         let query = supabaseServer
             .from("products")
-            .select("id,image_url,title,created_at")
+            .select("id,image_url,title,brand,price,created_at")
             .not("image_url", "is", null)
             .order("id", { ascending: false })
             .limit(limit + 1);
@@ -61,6 +61,8 @@ export async function GET(req: NextRequest) {
             id: Number(row.id),
             image_url: row.image_url,
             title: row.title,
+            brand: row.brand ?? null,
+            price: row.price != null ? Number(row.price) : null,
             created_at: row.created_at,
         }));
 
