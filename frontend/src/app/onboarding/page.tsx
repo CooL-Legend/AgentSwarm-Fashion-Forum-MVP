@@ -207,7 +207,32 @@ export default function OnboardingPage() {
         return Number.isFinite(value) ? value : null;
     };
 
+    const hasRequiredBasics = useMemo(() => {
+        const hasFirstName = form.first_name.trim().length > 0;
+        const hasLastName = form.last_name.trim().length > 0;
+        const hasUsername = form.username.trim().length > 0;
+        const hasValidAge = typeof form.age === "number" && Number.isFinite(form.age) && form.age >= 10 && form.age <= 120;
+        return hasFirstName && hasLastName && hasUsername && hasValidAge;
+    }, [form.age, form.first_name, form.last_name, form.username]);
+
+    const requiredBasicsError = "First name, last name, username, and age (10-120) are required.";
+
+    const goToNextStep = () => {
+        if (step === 1 && !hasRequiredBasics) {
+            setError(requiredBasicsError);
+            return;
+        }
+        setError(null);
+        setStep((prev) => Math.min(4, prev + 1));
+    };
+
     const submit = async (skip: boolean) => {
+        if (!skip && !hasRequiredBasics) {
+            setError(requiredBasicsError);
+            setStep(1);
+            return;
+        }
+
         setSaving(true);
         setError(null);
 
@@ -278,12 +303,15 @@ export default function OnboardingPage() {
                     <div className="space-y-6">
                         <h2 className="text-xl font-semibold text-zinc-100">Step 1: Basics + visual identity</h2>
                         <div className="grid gap-4 sm:grid-cols-2">
-                            <Input label="First name" value={form.first_name} onChange={(v) => updateField("first_name", v)} />
-                            <Input label="Last name" value={form.last_name} onChange={(v) => updateField("last_name", v)} />
-                            <Input label="Username" value={form.username} onChange={(v) => updateField("username", v)} />
+                            <Input label="First name" required value={form.first_name} onChange={(v) => updateField("first_name", v)} />
+                            <Input label="Last name" required value={form.last_name} onChange={(v) => updateField("last_name", v)} />
+                            <Input label="Username" required value={form.username} onChange={(v) => updateField("username", v)} />
                             <Input
                                 label="Age"
                                 type="number"
+                                required
+                                min={10}
+                                max={120}
                                 value={form.age == null ? "" : String(form.age)}
                                 onChange={(v) => updateField("age", parseNumberInput(v))}
                             />
@@ -402,7 +430,7 @@ export default function OnboardingPage() {
                         {step < 4 ? (
                             <button
                                 type="button"
-                                onClick={() => setStep((prev) => Math.min(4, prev + 1))}
+                                onClick={goToNextStep}
                                 disabled={saving}
                                 className="rounded-full bg-amber-500 px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-50"
                             >
@@ -434,17 +462,26 @@ function Input({
     value,
     onChange,
     type = "text",
+    required = false,
+    min,
+    max,
 }: {
     label: string;
     value: string;
     onChange: (value: string) => void;
     type?: string;
+    required?: boolean;
+    min?: number;
+    max?: number;
 }) {
     return (
         <label className="block space-y-1 text-sm">
             <span className="text-zinc-300">{label}</span>
             <input
                 type={type}
+                required={required}
+                min={min}
+                max={max}
                 value={value}
                 onChange={(event) => onChange(event.target.value)}
                 className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none transition-colors focus:border-amber-400/70"

@@ -8,7 +8,7 @@ export default function SignUpPage() {
                     routing="path"
                     path="/sign-up"
                     signInUrl="/sign-in"
-                    forceRedirectUrl="/gallery"
+                    forceRedirectUrl="/onboarding"
                     appearance={{
                         variables: {
                             colorBackground: "#0a0a0a",

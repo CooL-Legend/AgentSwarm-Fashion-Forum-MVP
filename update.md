@@ -1,3 +1,24 @@
+# Header Profile Tab (Authenticated Users)
+
+## What changed
+
+**Problem:** The top navigation did not include a direct path to the existing profile page for signed-in users.
+
+**Solution:** Added a `Profile` tab to the shared header navigation, rendered only when a Clerk-authenticated user is present.
+
+## Files modified
+
+- **`frontend/src/app/layout.tsx`**
+  - Kept `Home` and `Marketplace` links unchanged.
+  - Added conditional `Profile` link (`/profile`) shown only when `userId` exists.
+  - Kept signed-out behavior unchanged (`Sign in` button visible, no `Profile` tab).
+
+## Validation completed
+
+- **Frontend build:** `cd frontend && npm run build` passed.
+
+---
+
 # Clerk Google Sign-In + Onboarding on `user-temp`
 
 ## What changed

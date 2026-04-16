@@ -113,7 +113,13 @@ export default function GalleryView() {
                         Authorization: `Bearer ${token}`,
                     },
                 });
-                if (!response.ok) throw new Error("Failed to load user");
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        router.replace("/onboarding");
+                        return;
+                    }
+                    throw new Error("Failed to load user");
+                }
 
                 const payload = await response.json();
                 const appUser = payload?.user ?? payload;

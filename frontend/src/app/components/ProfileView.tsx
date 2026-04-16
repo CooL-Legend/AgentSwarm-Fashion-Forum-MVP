@@ -104,7 +104,10 @@ export default function ProfileView() {
                     },
                 });
                 if (!response.ok) {
-                    if (response.status === 404) throw new Error("User not found.");
+                    if (response.status === 404) {
+                        router.replace("/onboarding");
+                        return;
+                    }
                     throw new Error("Failed to load profile.");
                 }
 

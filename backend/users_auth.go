@@ -249,12 +249,26 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 		payload["onboarding_completed"] = false
 		payload["onboarding_skipped"] = false
 		payload["onboarding_version"] = onboardingVersion
+		applyBootstrapDefaults(payload, userID)
 
 		created, err := upsertUserTemp(r.Context(), cfg, payload)
 		if err != nil {
-			log.Printf("[api/users/bootstrap] upsert_failed userId=%s err=%v", userID, err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to bootstrap user."})
-			return
+			// Backward-compatible retry for environments where newer onboarding columns
+			// may not exist yet on "user-temp".
+			legacyPayload := map[string]any{
+				"user_id":    payload["user_id"],
+				"updated_at": payload["updated_at"],
+				"first_name": payload["first_name"],
+				"last_name":  payload["last_name"],
+				"username":   payload["username"],
+				"email_id":   payload["email_id"],
+			}
+			created, err = upsertUserTemp(r.Context(), cfg, legacyPayload)
+			if err != nil {
+				log.Printf("[api/users/bootstrap] upsert_failed userId=%s err=%v", userID, err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to bootstrap user."})
+				return
+			}
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -497,6 +511,40 @@ func cleanOptionalString(value *string) *string {
 	return &trimmed
 }
 
+func applyBootstrapDefaults(payload map[string]any, userID string) {
+	if _, exists := payload["first_name"]; !exists {
+		payload["first_name"] = "New"
+	}
+	if _, exists := payload["last_name"]; !exists {
+		payload["last_name"] = "User"
+	}
+	if _, exists := payload["username"]; exists {
+		return
+	}
+
+	if emailRaw, ok := payload["email_id"].(string); ok {
+		email := strings.TrimSpace(emailRaw)
+		if email != "" {
+			parts := strings.SplitN(email, "@", 2)
+			username := strings.TrimSpace(parts[0])
+			if username != "" {
+				payload["username"] = username
+				return
+			}
+		}
+	}
+
+	cleanUserID := strings.TrimSpace(strings.TrimPrefix(userID, "user_"))
+	cleanUserID = strings.ToLower(cleanUserID)
+	if len(cleanUserID) > 16 {
+		cleanUserID = cleanUserID[:16]
+	}
+	if cleanUserID == "" {
+		cleanUserID = "newuser"
+	}
+	payload["username"] = "user_" + cleanUserID
+}
+
 func validateChoiceArray(values []string, allowed map[string]struct{}, fieldName string) ([]string, error) {
 	cleaned := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -571,6 +619,39 @@ func fetchUserTempByID(ctx context.Context, cfg AppConfig, userID string) (*appU
 }
 
 func upsertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
+	// Primary path: true upsert when user_id has a unique/exclusion constraint.
+	user, err := upsertUserTempWithConflict(ctx, cfg, payload)
+	if err == nil {
+		return user, nil
+	}
+
+	// Fallback path: supports environments where user_id is not a unique key and
+	// on_conflict cannot be used.
+	userIDRaw, ok := payload["user_id"].(string)
+	if !ok {
+		return nil, err
+	}
+	userID := strings.TrimSpace(userIDRaw)
+	if userID == "" {
+		return nil, err
+	}
+
+	updated, updateErr := updateUserTempByID(ctx, cfg, userID, payload)
+	if updateErr == nil {
+		return updated, nil
+	}
+	if !errors.Is(updateErr, errUserNotFound) {
+		return nil, fmt.Errorf("%v; fallback update failed: %w", err, updateErr)
+	}
+
+	created, createErr := insertUserTemp(ctx, cfg, payload)
+	if createErr != nil {
+		return nil, fmt.Errorf("%v; fallback insert failed: %w", err, createErr)
+	}
+	return created, nil
+}
+
+func upsertUserTempWithConflict(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
 	endpoint, err := url.Parse(userTempEndpoint(cfg))
 	if err != nil {
 		return nil, err
@@ -610,6 +691,93 @@ func upsertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) 
 	}
 	if len(rows) == 0 {
 		return nil, errors.New("upsert returned no rows")
+	}
+	user := normalizeUserProfile(rows[0])
+	return &user, nil
+}
+
+func updateUserTempByID(ctx context.Context, cfg AppConfig, userID string, payload map[string]any) (*appUserProfile, error) {
+	endpoint, err := url.Parse(userTempEndpoint(cfg))
+	if err != nil {
+		return nil, err
+	}
+	q := endpoint.Query()
+	q.Set("user_id", "eq."+strings.TrimSpace(userID))
+	endpoint.RawQuery = q.Encode()
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+	req.Header.Set("Prefer", "return=representation")
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		payloadBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("supabase users update failed: status=%d body=%s", resp.StatusCode, string(payloadBody))
+	}
+
+	var rows []appUserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, errUserNotFound
+	}
+	user := normalizeUserProfile(rows[0])
+	return &user, nil
+}
+
+func insertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
+	endpoint, err := url.Parse(userTempEndpoint(cfg))
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := json.Marshal([]map[string]any{payload})
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+	req.Header.Set("Prefer", "return=representation")
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		payloadBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("supabase users insert failed: status=%d body=%s", resp.StatusCode, string(payloadBody))
+	}
+
+	var rows []appUserProfile
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, errors.New("insert returned no rows")
 	}
 	user := normalizeUserProfile(rows[0])
 	return &user, nil
