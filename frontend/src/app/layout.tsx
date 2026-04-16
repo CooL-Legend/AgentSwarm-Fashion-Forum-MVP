@@ -7,7 +7,7 @@ const manrope = Manrope({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "FashionHub",
-  description: "Personalized fashion discovery with virtual try-on.",
+  description: "Marketplace discovery with virtual try-on and pose transfer.",
 };
 
 export default function RootLayout({
@@ -29,32 +29,14 @@ export default function RootLayout({
               </span>
             </Link>
 
-            <nav className="hidden items-center gap-5 text-xs text-zinc-400 md:flex">
+            <nav className="flex items-center gap-5 text-xs text-zinc-400">
               <Link href="/" className="transition-colors hover:text-zinc-100">
                 Home
               </Link>
               <Link href="/gallery" className="transition-colors hover:text-zinc-100">
-                Gallery
-              </Link>
-              <Link
-                href="/profile"
-                className="transition-colors hover:text-zinc-100"
-              >
-                Profile
+                Marketplace
               </Link>
             </nav>
-
-            <div className="flex items-center gap-2 text-xs">
-              <span className="hidden rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400 sm:inline-flex">
-                MVP
-              </span>
-              <Link
-                href="/gallery"
-                className="rounded-full bg-amber-500 px-3 py-1.5 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400"
-              >
-                Try App
-              </Link>
-            </div>
           </div>
         </header>
         {children}

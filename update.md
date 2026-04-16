@@ -194,3 +194,115 @@
 - API routes (`/api/tryon`) — the try-on endpoint is unchanged; pose transfer is a separate downstream step.
 - `TryOnNotification`, `GalleryView` — unaffected.
 - `.env` — `GEMINI_API_KEY` and `GEMINI_MODEL` were already configured.
+
+---
+
+# Google Cloud Storage Integration
+
+## What changed
+
+**Problem:** All try-on and pose transfer images were processed entirely in-memory as base64 strings and never persisted. Users had no way to retrieve past results, and there was no per-user storage for uploaded images.
+
+**Solution:** Integrated Google Cloud Storage (bucket: `tryown-media`) using raw HTTP calls to the GCS JSON API. Each user gets a folder structure in the bucket, and all images (inputs, try-on results, pose transfers) are automatically stored when a `user_id` is present. Reuses the existing Google service account OAuth flow (`getAccessToken`) — no new credentials or SDK dependencies needed.
+
+## Per-user folder structure
+
+```
+tryown-media/users/{user_id}/
+  ├── input/{input_id}.png        # user-uploaded source images
+  ├── tryon/{tryon_id}.png        # generated try-on outputs
+  ├── pose/{pose_id}.png          # pose transfer outputs
+  ├── info/{image_id}.txt         # metadata file per image
+  └── profile.md                  # auto-created on first interaction
+```
+
+## Files created
+
+- **`backend/gcs.go`** — All GCS logic (~450 lines):
+  - **GCS operations:** `gcsUpload`, `gcsRead`, `gcsDelete`, `gcsListPrefix` — raw HTTP calls to `storage.googleapis.com` JSON API with bearer token auth.
+  - **Helpers:** `generateImageID` (timestamp + random hex), `decodeBase64Image` (strips data URL prefix + decodes), `contentTypeToExt`, `gcsObjectPath`, `gcsUserPrefix`.
+  - **User management:** `gcsCheckAccess` (write/read/delete health check), `gcsInitUserFolder` (creates `profile.md` on first interaction), `gcsWriteInfoFile` (creates `info/{id}.txt` metadata per image).
+  - **Duplicate detection:** Upload-input handler compares incoming image size against existing `input/` objects; skips re-upload if a match is found.
+  - **HTTP handlers:**
+    - `GET /api/gcs-health` — verifies read/write/delete access to the bucket.
+    - `POST /api/upload-input` — stores user-uploaded images in `input/`, creates corresponding `info/{id}.txt`, detects duplicates.
+    - `GET /api/user-images?user_id=xxx&category=tryon` — lists stored objects for a user, filterable by category (`input`, `tryon`, `pose`, `info`).
+
+## Files modified
+
+- **`backend/main.go`** — Added `GCSBucket` and `GCSBasePath` fields to `AppConfig`; loads from `GCS_BUCKET` and `GCS_BASE_PATH` env vars; registered three new routes (`/api/gcs-health`, `/api/upload-input`, `/api/user-images`).
+- **`backend/api.go`** — Modified `tryOnHandler` and `poseTransferHandler`:
+  - Added `user_id` field to `tryOnRequest` and `poseTransferRequest` structs.
+  - Added `stored_path` and `stored_url` fields to `tryOnResponse`.
+  - After successful image generation, if `user_id` is present, the result is synchronously uploaded to GCS (`tryon/` or `pose/` folder), an `info/{id}.txt` is written in the background, and `stored_path`/`stored_url` are included in the API response.
+- **`frontend/src/app/hooks/useTryOnTask.ts`** — Extended `TryOnTaskInput` with optional `userId`; sends `user_id` in the request body when present; surfaces `storedPath` and `storedUrl` from the response in `TryOnTask` state.
+- **`frontend/src/app/components/TryOnResultModal.tsx`** — Accepts optional `userId` prop; passes `user_id` in the pose-transfer fetch call so pose results are stored to GCS.
+- **`frontend/src/app/components/GalleryView.tsx`** — Extracts `user_id` from the `/api/users` response and stores it in component state; passes it to `startTryOn` and `TryOnResultModal` so all generated images are automatically persisted.
+- **`.env`** — Added `GCS_BUCKET=tryown-media` and `GCS_BASE_PATH=` (empty, files go directly under `users/` in the bucket root).
+
+## Design decisions
+
+- **No SDK, raw HTTP:** The GCS JSON API is called directly via `net/http`, consistent with the existing Vertex AI and Gemini integrations. Keeps the backend at zero external Go dependencies.
+- **PNG format:** Images are stored in their native format (PNG from Vertex AI, PNG/JPEG from Gemini). No WebP conversion — avoids CGo/platform-dependent dependencies.
+- **Synchronous upload:** GCS upload completes before the API response is sent (~200-500ms overhead on top of 10-55s generation time). Storage URL is returned in the response. Upload failure is logged but never blocks the image result.
+- **Automatic storage:** No opt-in toggle — images are stored whenever a `user_id` is present in the request. The frontend sends `user_id` automatically when the user profile is loaded.
+- **Duplicate detection:** Input image uploads are checked against existing files by size; duplicates return the existing object path without re-uploading.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed (zero external deps).
+- **Frontend TypeScript:** `npx tsc --noEmit` passed for all modified files.
+- **GCS health check:** `GET /api/gcs-health` returned `{ ok: true }` — confirmed read/write/delete access.
+- **Upload + dedup:** Uploaded a test image via `POST /api/upload-input`; re-uploading the same image returned `{ duplicate: true }` without creating a new object.
+- **List images:** `GET /api/user-images` correctly lists objects per category; validates category names; returns empty list for non-existent users.
+- **End-to-end:** Try-on results for the real user (`user_393o0b5tH35nhDaMofldcbKBrgA`) were confirmed stored in `tryown-media/users/{user_id}/tryon/` with corresponding `info/` metadata files.
+
+---
+
+# Homepage Re-Scope: Marketplace + Try-On + Pose Transfer
+
+## What changed
+
+**Problem:** The homepage messaging had grown broad and included non-core narratives (community/forum, roadmap, brand-investor framing, profile-led promotion) that did not match the current product scope.
+
+**Solution:** Rebuilt the homepage as a lean 5-section flow focused only on shipped value:
+
+1. Hero
+2. Problem framing
+3. 3 product pillars
+4. How it works
+5. Final CTA
+
+Copy and visual framing now center on three active surfaces only: **Marketplace**, **Virtual Try-On**, and **Pose Transfer**.
+
+## Files modified
+
+- **`frontend/src/app/page.tsx`** — Replaced long-form landing content with a minimalist 5-section page:
+  - Hero with primary CTA **Try Marketplace** (`/gallery`) and secondary in-page anchor **See how it works**.
+  - Minimal 3-card story visual (`Discover -> Try-On -> Pose Transfer`) without screenshots.
+  - Problem section focused on shopping/fit-confidence fragmentation.
+  - Exactly 3 pillars: Marketplace discovery, Virtual try-on, Pose transfer.
+  - How-it-works sequence ending at pose transfer.
+  - Final CTA with a single product-focused action to `/gallery`.
+  - Removed non-core sections and copy for forum/community, roadmap/future vision, brand-growth cards, and profile demo CTA.
+
+- **`frontend/src/app/layout.tsx`** — Aligned shell navigation and metadata to the same scope:
+  - Updated metadata description to: `Marketplace discovery with virtual try-on and pose transfer.`
+  - Header navigation now includes only **Home** and **Marketplace**.
+  - Removed profile link and extra header CTA so the top nav stays core-only.
+
+## Public behavior notes
+
+- Route structure is unchanged: `/`, `/gallery`, `/profile` still exist.
+- User-facing surface naming now prefers **Marketplace** while still routing to `/gallery`.
+- Profile remains implemented but is no longer promoted on the homepage.
+
+## Validation completed
+
+- Content checks confirmed homepage copy no longer includes non-core narratives (forum/community/roadmap/profile-demo).
+- CTA and anchor checks:
+  - Hero primary CTA -> `/gallery`
+  - Final CTA -> `/gallery`
+  - Secondary CTA anchors to `#how-it-works`
+- Frontend build command was run (`cd frontend && npm run build`) and failed due to a pre-existing unrelated issue:
+  - `Module not found: Can't resolve '@/lib/supabase-server'` in `frontend/src/app/api/products/route.ts`.
