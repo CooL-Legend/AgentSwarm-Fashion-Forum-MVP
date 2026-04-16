@@ -6,8 +6,8 @@ import "./globals.css";
 const manrope = Manrope({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Inspiration Board",
-  description: "Curated fashion inspiration powered by Supabase",
+  title: "FashionHub",
+  description: "Personalized fashion discovery with virtual try-on.",
 };
 
 export default function RootLayout({
@@ -22,27 +22,37 @@ export default function RootLayout({
           <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
             <Link href="/" className="group flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-amber-300 via-orange-400 to-rose-400 text-sm font-black text-zinc-950 shadow-[0_0_20px_rgba(251,191,36,0.25)]">
-                I
+                F
               </div>
               <span className="text-sm font-semibold tracking-wide text-zinc-200 transition-colors group-hover:text-zinc-100">
-                inspiration<span className="text-amber-300">board</span>
+                Fashion<span className="text-amber-300">Hub</span>
               </span>
             </Link>
 
-            <div className="flex items-center gap-3 text-xs">
-              <span className="hidden text-zinc-500 sm:inline">Curated Visual Feed</span>
-              <span className="rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
-                live
-              </span>
+            <nav className="hidden items-center gap-5 text-xs text-zinc-400 md:flex">
+              <Link href="/" className="transition-colors hover:text-zinc-100">
+                Home
+              </Link>
+              <Link href="/gallery" className="transition-colors hover:text-zinc-100">
+                Gallery
+              </Link>
               <Link
                 href="/profile"
-                className="flex h-8 w-8 items-center justify-center rounded-full border border-zinc-700 bg-zinc-900 text-zinc-400 transition-colors hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-200"
-                title="Profile"
+                className="transition-colors hover:text-zinc-100"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
-                  <circle cx="12" cy="7" r="4" />
-                </svg>
+                Profile
+              </Link>
+            </nav>
+
+            <div className="flex items-center gap-2 text-xs">
+              <span className="hidden rounded-full border border-zinc-700 bg-zinc-900 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400 sm:inline-flex">
+                MVP
+              </span>
+              <Link
+                href="/gallery"
+                className="rounded-full bg-amber-500 px-3 py-1.5 text-[11px] font-semibold text-black transition-colors hover:bg-amber-400"
+              >
+                Try App
               </Link>
             </div>
           </div>

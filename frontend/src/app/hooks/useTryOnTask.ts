@@ -6,6 +6,7 @@ import { backendApiUrl } from "@/lib/backend-api";
 interface TryOnTaskInput {
     personBase64: string;
     garmentImageUrl: string;
+    userId?: string;
 }
 
 export type TryOnStatus = "processing" | "done" | "error";
@@ -16,6 +17,8 @@ export interface TryOnTask {
     personPreview: string;
     resultImage: string | null;
     error: string | null;
+    storedPath: string | null;
+    storedUrl: string | null;
 }
 
 export function useTryOnTask() {
@@ -44,6 +47,8 @@ export function useTryOnTask() {
             personPreview: input.personBase64,
             resultImage: null,
             error: null,
+            storedPath: null,
+            storedUrl: null,
         });
 
         fetch(backendApiUrl("/api/tryon"), {
@@ -52,6 +57,7 @@ export function useTryOnTask() {
             body: JSON.stringify({
                 person_image: input.personBase64,
                 cloth_image_url: input.garmentImageUrl,
+                ...(input.userId ? { user_id: input.userId } : {}),
             }),
             signal: controller.signal,
         })
@@ -67,7 +73,13 @@ export function useTryOnTask() {
                 if (data.image) {
                     setTask((prev) =>
                         prev && prev.status === "processing"
-                            ? { ...prev, status: "done", resultImage: data.image }
+                            ? {
+                                  ...prev,
+                                  status: "done",
+                                  resultImage: data.image,
+                                  storedPath: data.stored_path ?? null,
+                                  storedUrl: data.stored_url ?? null,
+                              }
                             : prev,
                     );
                 } else {

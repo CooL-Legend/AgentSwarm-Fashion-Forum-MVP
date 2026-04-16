@@ -48,6 +48,7 @@ export default function GalleryView() {
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [userId, setUserId] = useState<string | null>(null);
     const [userGender, setUserGender] = useState<string | null>(null);
     const [genderResolved, setGenderResolved] = useState(false);
     const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
@@ -77,10 +78,12 @@ export default function GalleryView() {
         fetch(backendApiUrl("/api/users"))
             .then((res) => (res.ok ? res.json() : null))
             .then((data) => {
-                const raw = data?.user?.sex ?? data?.sex;
+                const user = data?.user ?? data;
+                const raw = user?.sex;
                 const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
                 const genderMap: Record<string, string> = { male: "men", female: "women" };
                 setUserGender(sex ? (genderMap[sex] ?? sex) : null);
+                if (user?.user_id) setUserId(user.user_id);
             })
             .catch(() => setUserGender(null))
             .finally(() => setGenderResolved(true));
@@ -500,7 +503,11 @@ export default function GalleryView() {
                     garmentImageUrl={tryOnImage}
                     onClose={() => setTryOnImage(null)}
                     onTryOnSubmit={(personBase64) => {
-                        startTryOn({ personBase64, garmentImageUrl: tryOnImage });
+                        startTryOn({
+                            personBase64,
+                            garmentImageUrl: tryOnImage,
+                            ...(userId ? { userId } : {}),
+                        });
                         setTryOnImage(null);
                     }}
                 />
@@ -520,6 +527,7 @@ export default function GalleryView() {
                     personPreview={task.personPreview}
                     garmentImageUrl={task.garmentUrl}
                     resultImage={task.resultImage}
+                    userId={userId}
                     onClose={() => {
                         setShowTryOnResult(false);
                         dismiss();

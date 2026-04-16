@@ -7,10 +7,11 @@ interface Props {
     personPreview: string;
     garmentImageUrl: string;
     resultImage: string;
+    userId?: string | null;
     onClose: () => void;
 }
 
-export default function TryOnResultModal({ personPreview, garmentImageUrl, resultImage, onClose }: Props) {
+export default function TryOnResultModal({ personPreview, garmentImageUrl, resultImage, userId, onClose }: Props) {
     const [poseImageBase64, setPoseImageBase64] = useState<string | null>(null);
     const [posePreview, setPosePreview] = useState<string | null>(null);
     const [poseTransferring, setPoseTransferring] = useState(false);
@@ -61,6 +62,7 @@ export default function TryOnResultModal({ personPreview, garmentImageUrl, resul
                 body: JSON.stringify({
                     result_image: resultImage,
                     pose_image: poseImageBase64,
+                    ...(userId ? { user_id: userId } : {}),
                 }),
             });
             if (!resp.ok) {
