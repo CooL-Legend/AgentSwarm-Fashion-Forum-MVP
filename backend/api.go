@@ -673,10 +673,7 @@ type tryOnRequest struct {
 	ClothImage    string `json:"cloth_image"`
 	ClothImageURL string `json:"cloth_image_url"`
 	UserID        string `json:"user_id"`
-<<<<<<< HEAD
-=======
 	GarmentID     string `json:"garment_id"`
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 }
 
 type tryOnResponse struct {
@@ -809,41 +806,12 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		firstPrediction := predictions[0]
 		outputImage := extractPredictionImage(firstPrediction)
 		if outputImage != "" {
-<<<<<<< HEAD
-			resp := tryOnResponse{
-				Success: true,
-				Image:   "data:image/png;base64," + outputImage,
-			}
-
-			// Store to GCS when user_id is present
-			if strings.TrimSpace(input.UserID) != "" && cfg.GCSBucket != "" {
-				imgBytes, _, decErr := decodeBase64Image(outputImage)
-				if decErr == nil {
-					imgID := generateImageID()
-					ext := contentTypeToExt("image/png")
-					objPath := gcsObjectPath(cfg, input.UserID, "tryon", imgID+ext)
-					if gcsURL, uploadErr := gcsUpload(r.Context(), cfg, objPath, imgBytes, "image/png"); uploadErr != nil {
-						log.Printf("[api/tryon] gcs_upload_failed: %v", uploadErr)
-					} else {
-						resp.StoredPath = &objPath
-						resp.StoredURL = &gcsURL
-						go gcsInitUserFolder(context.Background(), cfg, input.UserID)
-						go gcsWriteInfoFile(context.Background(), cfg, input.UserID, imgID, "tryon", ext)
-					}
-				} else {
-					log.Printf("[api/tryon] base64_decode_for_gcs_failed: %v", decErr)
-				}
-			}
-
-			writeJSON(w, http.StatusOK, resp)
-=======
 			resultDataURL := "data:image/png;base64," + outputImage
 			writeJSON(w, http.StatusOK, tryOnResponse{
 				Success: true,
 				Image:   resultDataURL,
 			})
 			saveTryOnSession(cfg, input.UserID, input.GarmentID, input.PersonImage, outputImage, "google/virtual-try-on-001")
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 			return
 		}
 
@@ -1041,38 +1009,12 @@ func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
 			mimeType = "image/png"
 		}
 
-		respPayload := map[string]any{
+		writeJSON(w, http.StatusOK, map[string]any{
 			"success": true,
 			"image":   fmt.Sprintf("data:%s;base64,%s", mimeType, encodedImage),
-<<<<<<< HEAD
-		}
-
-		// Store to GCS when user_id is present
-		if strings.TrimSpace(input.UserID) != "" && cfg.GCSBucket != "" {
-			imgBytes, _, decErr := decodeBase64Image(encodedImage)
-			if decErr == nil {
-				imgID := generateImageID()
-				ext := contentTypeToExt(mimeType)
-				objPath := gcsObjectPath(cfg, input.UserID, "pose", imgID+ext)
-				if gcsURL, uploadErr := gcsUpload(r.Context(), cfg, objPath, imgBytes, mimeType); uploadErr != nil {
-					log.Printf("[api/pose-transfer] gcs_upload_failed: %v", uploadErr)
-				} else {
-					respPayload["stored_path"] = objPath
-					respPayload["stored_url"] = gcsURL
-					go gcsInitUserFolder(context.Background(), cfg, input.UserID)
-					go gcsWriteInfoFile(context.Background(), cfg, input.UserID, imgID, "pose", ext)
-				}
-			} else {
-				log.Printf("[api/pose-transfer] base64_decode_for_gcs_failed: %v", decErr)
-			}
-		}
-
-		writeJSON(w, http.StatusOK, respPayload)
-=======
 		})
 
 		savePoseTransferSession(cfg, input.UserID, input.PoseImage, encodedImage, mimeType, model)
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 	}
 }
 

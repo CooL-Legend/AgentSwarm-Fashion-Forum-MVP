@@ -9,11 +9,7 @@
     "start": "next start"
   },
   "dependencies": {
-<<<<<<< HEAD
-    "@clerk/nextjs": "^7.2.1",
-=======
     "@clerk/nextjs": "^7.2.2",
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
     "@supabase/supabase-js": "^2.97.0",
     "csv-parser": "^3.2.0",
     "dotenv": "^17.3.1",

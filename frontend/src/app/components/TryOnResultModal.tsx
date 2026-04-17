@@ -12,12 +12,8 @@ interface Props {
     onClose: () => void;
 }
 
-<<<<<<< HEAD
-export default function TryOnResultModal({ personPreview, garmentImageUrl, resultImage, userId, onClose }: Props) {
-=======
 export default function TryOnResultModal({ personPreview, garmentImageUrl, resultImage, onClose }: Props) {
     const { user } = useUser();
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
     const [poseImageBase64, setPoseImageBase64] = useState<string | null>(null);
     const [posePreview, setPosePreview] = useState<string | null>(null);
     const [poseTransferring, setPoseTransferring] = useState(false);
@@ -68,11 +64,7 @@ export default function TryOnResultModal({ personPreview, garmentImageUrl, resul
                 body: JSON.stringify({
                     result_image: resultImage,
                     pose_image: poseImageBase64,
-<<<<<<< HEAD
-                    ...(userId ? { user_id: userId } : {}),
-=======
                     user_id: user?.id,
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
                 }),
             });
             if (!resp.ok) {

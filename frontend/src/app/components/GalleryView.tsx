@@ -18,7 +18,6 @@ import TryOnNotification from "./TryOnNotification";
 import TryOnResultModal from "./TryOnResultModal";
 import ProductCard from "./ProductCard";
 import { useTryOnTask } from "../hooks/useTryOnTask";
-import { useUser } from "@clerk/nextjs";
 
 const PAGE_LIMIT = 100;
 const VIRTUAL_ROW_HEIGHT = 320;
@@ -67,7 +66,6 @@ export default function GalleryView() {
 
     const [showTryOnResult, setShowTryOnResult] = useState(false);
     const { task, startTryOn, dismiss } = useTryOnTask();
-    const { user } = useUser();
 
     const [viewportHeight, setViewportHeight] = useState(0);
     const [viewportWidth, setViewportWidth] = useState(0);
@@ -580,14 +578,9 @@ export default function GalleryView() {
                     onTryOnSubmit={(personBase64) => {
                         startTryOn({
                             personBase64,
-<<<<<<< HEAD
-                            garmentImageUrl: tryOnImage,
-                            ...(userId ? { userId } : {}),
-=======
                             garmentImageUrl: tryOnImage.imageUrl,
                             userId: user?.id,
                             garmentId: tryOnImage.garmentId,
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
                         });
                         setTryOnImage(null);
                     }}

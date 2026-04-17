@@ -101,15 +101,9 @@ func main() {
 	mux.HandleFunc("/api/users/onboarding", withCORS(cfg, onboardingUserHandler(cfg)))
 	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
 	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
-<<<<<<< HEAD
-	mux.HandleFunc("/api/gcs-health", withCORS(cfg, gcsHealthHandler(cfg)))
-	mux.HandleFunc("/api/upload-input", withCORS(cfg, gcsUploadInputHandler(cfg)))
-	mux.HandleFunc("/api/user-images", withCORS(cfg, gcsListUserImagesHandler(cfg)))
-=======
 	mux.HandleFunc("/api/upload-asset", withCORS(cfg, uploadAssetHandler(cfg)))
 	mux.HandleFunc("/api/upload-profile", withCORS(cfg, uploadProfileHandler(cfg)))
 	mux.HandleFunc("/api/user-assets", withCORS(cfg, userAssetsHandler(cfg)))
->>>>>>> 0c25ba15c222c12c464574e5a4df8977d0ca87d8
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
