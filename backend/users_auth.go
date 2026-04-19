@@ -81,35 +81,35 @@ type appUserProfile struct {
 	Location              *string  `json:"location"`
 	Sex                   *string  `json:"sex"`
 	Height                *string  `json:"height"`
-	FrontImage            *string  `json:"front_image"`
-	BackImage             *string  `json:"back_image"`
-	Images                []string `json:"images"`
-	CreatedAt             *string  `json:"created_at"`
-	UpdatedAt             *string  `json:"updated_at"`
-	ProfileVector         any      `json:"profile_vector"`
-	OnboardingCompleted   *bool    `json:"onboarding_completed"`
-	OnboardingSkipped     *bool    `json:"onboarding_skipped"`
-	OnboardingVersion     *int     `json:"onboarding_version"`
-	OnboardingCompletedAt *string  `json:"onboarding_completed_at"`
-	OnboardingSkippedAt   *string  `json:"onboarding_skipped_at"`
+	FrontImage            *string      `json:"front_image"`
+	BackImage             *string      `json:"back_image"`
+	Images                imageURLList `json:"images"`
+	CreatedAt             *string      `json:"created_at"`
+	UpdatedAt             *string      `json:"updated_at"`
+	ProfileVector         any          `json:"profile_vector"`
+	OnboardingCompleted   *bool        `json:"onboarding_completed"`
+	OnboardingSkipped     *bool        `json:"onboarding_skipped"`
+	OnboardingVersion     *int         `json:"onboarding_version"`
+	OnboardingCompletedAt *string      `json:"onboarding_completed_at"`
+	OnboardingSkippedAt   *string      `json:"onboarding_skipped_at"`
 
-	Age                 *int     `json:"age"`
-	Occupation          *string  `json:"occupation"`
-	HeightCM            *float64 `json:"height_cm"`
-	ShoulderWidthCM     *float64 `json:"shoulder_width_cm"`
-	ChestBustCM         *float64 `json:"chest_bust_cm"`
-	ArmLengthCM         *float64 `json:"arm_length_cm"`
-	WaistCM             *float64 `json:"waist_cm"`
-	ThighCM             *float64 `json:"thigh_cm"`
-	InseamCM            *float64 `json:"inseam_cm"`
-	VisualLanguage      *string  `json:"visual_language"`
-	MajorBuys           []string `json:"major_buys"`
-	SeasonalPreferences []string `json:"seasonal_preferences"`
-	TshirtFit           *string  `json:"tshirt_fit"`
-	JeansFit            *string  `json:"jeans_fit"`
-	ColorFamilies       []string `json:"color_families"`
-	ActivityProfiles    []string `json:"activity_profiles"`
-	FitFrustrations     []string `json:"fit_frustrations"`
+	Age                 *int         `json:"age"`
+	Occupation          *string      `json:"occupation"`
+	HeightCM            *float64     `json:"height_cm"`
+	ShoulderWidthCM     *float64     `json:"shoulder_width_cm"`
+	ChestBustCM         *float64     `json:"chest_bust_cm"`
+	ArmLengthCM         *float64     `json:"arm_length_cm"`
+	WaistCM             *float64     `json:"waist_cm"`
+	ThighCM             *float64     `json:"thigh_cm"`
+	InseamCM            *float64     `json:"inseam_cm"`
+	VisualLanguage      *string      `json:"visual_language"`
+	MajorBuys           imageURLList `json:"major_buys"`
+	SeasonalPreferences imageURLList `json:"seasonal_preferences"`
+	TshirtFit           *string      `json:"tshirt_fit"`
+	JeansFit            *string      `json:"jeans_fit"`
+	ColorFamilies       imageURLList `json:"color_families"`
+	ActivityProfiles    imageURLList `json:"activity_profiles"`
+	FitFrustrations     imageURLList `json:"fit_frustrations"`
 }
 
 type bootstrapUserRequest struct {
