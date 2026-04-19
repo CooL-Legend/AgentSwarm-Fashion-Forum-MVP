@@ -37,7 +37,7 @@ func loadConfig() (AppConfig, error) {
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
-		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image")),
+		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
 		HFToken:           stringsTrimQuotes(getenv("HF_TOKEN", "")),
 		VideoSpaceURL:     normalizeScraperURL(getenv("HF_VIDEO_SPACE_URL", "https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space")),
 		ViewClassifierURL: normalizeScraperURL(getenv("HF_VIEW_API_URL", "https://huggingface.co/spaces/CooLLegend/front-back-view-api")),
