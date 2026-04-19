@@ -21,6 +21,7 @@ type AppConfig struct {
 	GeminiModel       string
 	HFToken           string
 	VideoSpaceURL     string
+	ViewClassifierURL string
 	GCSBucket         string
 	GCSBasePath       string
 }
@@ -36,9 +37,10 @@ func loadConfig() (AppConfig, error) {
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
-		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image")),
 		HFToken:           stringsTrimQuotes(getenv("HF_TOKEN", "")),
 		VideoSpaceURL:     normalizeScraperURL(getenv("HF_VIDEO_SPACE_URL", "https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space")),
+		ViewClassifierURL: normalizeScraperURL(getenv("HF_VIEW_API_URL", "https://huggingface.co/spaces/CooLLegend/front-back-view-api")),
 		GCSBucket:         getenv("GCS_BUCKET", "tryown-media"),
 		GCSBasePath:       strings.TrimRight(getenv("GCS_BASE_PATH", ""), "/"),
 	}
@@ -104,6 +106,7 @@ func main() {
 	mux.HandleFunc("/api/upload-asset", withCORS(cfg, uploadAssetHandler(cfg)))
 	mux.HandleFunc("/api/upload-profile", withCORS(cfg, uploadProfileHandler(cfg)))
 	mux.HandleFunc("/api/user-assets", withCORS(cfg, userAssetsHandler(cfg)))
+	mux.HandleFunc("/api/tryons", withCORS(cfg, tryonsListHandler(cfg)))
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

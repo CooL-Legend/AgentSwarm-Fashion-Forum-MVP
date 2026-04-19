@@ -48,7 +48,8 @@ func errConfig(message string) error {
 
 func stringsTrimQuotes(value string) string {
 	trimmed := strings.TrimSpace(value)
-	return strings.Trim(trimmed, "\"")
+	trimmed = strings.Trim(trimmed, "\"")
+	return strings.TrimSpace(trimmed)
 }
 
 func withCORS(cfg AppConfig, next http.HandlerFunc) http.HandlerFunc {
@@ -926,7 +927,7 @@ func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
 
 		model := strings.TrimSpace(cfg.GeminiModel)
 		if model == "" {
-			model = "gemini-3.1-flash-image-preview"
+			model = "gemini-3.1-flash-image"
 		}
 
 		endpoint := fmt.Sprintf(
@@ -1570,8 +1571,79 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		mimeType, ext := detectImageMimeAndExt(input.Image)
-		objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
 
+		// Only input images get the hash-dedup + DB-tracked path.
+		// Pose uploads remain GCS-only for now.
+		if input.Kind == "input" {
+			raw, decodeErr := base64.StdEncoding.DecodeString(stripDataURL(input.Image))
+			if decodeErr != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid base64 image"})
+				return
+			}
+			sum := sha256.Sum256(raw)
+			hashHex := hex.EncodeToString(sum[:])
+
+			if existing, err := findUserInputImageByHash(r.Context(), cfg, input.UserID, hashHex); err != nil {
+				log.Printf("[api/upload-asset] dedup_lookup_failed user=%s err=%v", input.UserID, err)
+			} else if existing != nil {
+				log.Printf("[api/upload-asset] dedup_hit user=%s id=%s", input.UserID, existing.ID)
+				// Backfill enrichment if this row was inserted before the pipeline was wired
+				// (or if a prior enrichment attempt failed and left description null).
+				if existing.Description == nil || strings.TrimSpace(*existing.Description) == "" {
+					log.Printf("[api/upload-asset] dedup_backfill_enrich id=%s", existing.ID)
+					enrichUserInputImage(cfg, existing.ID, existing.GCSURL, mimeType, input.Image)
+				}
+				writeJSON(w, http.StatusOK, map[string]any{
+					"object_path": strings.TrimPrefix(existing.GCSURL, "https://storage.googleapis.com/"+gcsBucket+"/"),
+					"gs_uri":      "gs://" + gcsBucket + "/" + strings.TrimPrefix(existing.GCSURL, "https://storage.googleapis.com/"+gcsBucket+"/"),
+					"gcs_url":     existing.GCSURL,
+					"duplicate":   true,
+					"id":          existing.ID,
+				})
+				return
+			}
+
+			objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
+			if err := gcsUpload(r.Context(), cfg, objectPath, mimeType, raw); err != nil {
+				log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", input.UserID, input.Kind, err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Storage upload failed"})
+				return
+			}
+
+			gcsURL := gcsPublicURL(objectPath)
+			signedURL, signErr := gcsSignedURL(cfg, objectPath, 7*24*time.Hour)
+			if signErr != nil {
+				log.Printf("[api/upload-asset] sign_failed user=%s err=%v", input.UserID, signErr)
+			}
+			row, insertErr := insertUserInputImage(r.Context(), cfg, map[string]any{
+				"user_id":    input.UserID,
+				"gcs_url":    gcsURL,
+				"signed_url": signedURL,
+				"hash":       hashHex,
+				"view_type":  1,
+			})
+			if insertErr != nil {
+				log.Printf("[api/upload-asset] db_insert_failed user=%s err=%v", input.UserID, insertErr)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "DB insert failed: " + insertErr.Error()})
+				return
+			}
+
+			// Async: caption (Gemini) + view-type classify (HF) in parallel, then PATCH both fields.
+			enrichUserInputImage(cfg, row.ID, gcsURL, mimeType, input.Image)
+
+			log.Printf("[api/upload-asset] ok user=%s kind=input path=%s", input.UserID, objectPath)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"object_path": objectPath,
+				"gs_uri":      "gs://" + gcsBucket + "/" + objectPath,
+				"gcs_url":     gcsURL,
+				"duplicate":   false,
+				"id":          row.ID,
+			})
+			return
+		}
+
+		// kind == "pose" — GCS-only, unchanged.
+		objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
 		if err := gcsUploadBase64(r.Context(), cfg, objectPath, mimeType, input.Image); err != nil {
 			log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", input.UserID, input.Kind, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Storage upload failed"})
@@ -1691,6 +1763,32 @@ func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 	}
 }
 
+// tryonsListHandler returns the authenticated user's try-on history, newest first.
+func tryonsListHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			return
+		}
+
+		rows, err := fetchTryonsByUserID(r.Context(), cfg, userID)
+		if err != nil {
+			log.Printf("[api/tryons] list_failed user=%s err=%v", userID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to list try-ons"})
+			return
+		}
+
+		log.Printf("[api/tryons] ok user=%s count=%d", userID, len(rows))
+		writeJSON(w, http.StatusOK, map[string]any{"tryons": rows})
+	}
+}
+
 // classifyObjectPath parses "users/{uid}/{kind}/..." and returns (kind, sessionID).
 func classifyObjectPath(userID, objectName string) (string, string) {
 	prefix := "users/" + userID + "/"
@@ -1740,16 +1838,38 @@ func saveTryOnSession(cfg AppConfig, userID, garmentID, personB64, resultB64, mo
 			return
 		}
 
-		// Save meta.json
+		// DB row for tryon_generations — user_id is the Clerk text id (matches public.users.user_id).
+		resultSigned, rSignErr := gcsSignedURL(cfg, resultPath, 7*24*time.Hour)
+		if rSignErr != nil {
+			log.Printf("[save/tryon] sign_result_failed user=%s session=%s err=%v", userID, sessionID, rSignErr)
+		}
+		inputSigned, iSignErr := gcsSignedURL(cfg, inputPath, 7*24*time.Hour)
+		if iSignErr != nil {
+			log.Printf("[save/tryon] sign_input_failed user=%s session=%s err=%v", userID, sessionID, iSignErr)
+		}
+		row := map[string]any{
+			"user_id":               userID,
+			"product_id":            garmentID,
+			"gcs_url":               gcsPublicURL(resultPath),
+			"person_img_url":        gcsPublicURL(inputPath),
+			"signed_url":            resultSigned,
+			"person_img_signed_url": inputSigned,
+		}
+		if err := insertTryonGeneration(ctx, cfg, row); err != nil {
+			log.Printf("[save/tryon] db_insert_failed user=%s session=%s err=%v", userID, sessionID, err)
+		}
+
+		// GCS meta.json sidecar (secondary record, kept for ops / legacy walkers)
 		meta := map[string]any{
-			"user_id":      userID,
-			"session_id":   sessionID,
-			"kind":         "tryon",
-			"garment_id":   garmentID,
-			"model":        model,
-			"input_path":   inputPath,
-			"result_path":  resultPath,
-			"created_at":   time.Now().UTC().Format(time.RFC3339),
+			"user_id":     userID,
+			"session_id":  sessionID,
+			"kind":        "tryon",
+			"garment_id":  garmentID,
+			"model":       model,
+			"bucket":      gcsBucket,
+			"input_path":  inputPath,
+			"result_path": resultPath,
+			"created_at":  time.Now().UTC().Format(time.RFC3339),
 		}
 		metaBytes, _ := json.MarshalIndent(meta, "", "  ")
 		metaPath := userSessionPath(userID, sessionID, "meta.json")
@@ -1788,11 +1908,13 @@ func savePoseTransferSession(cfg AppConfig, userID, poseB64, resultB64, mimeType
 			return
 		}
 
+		// TODO: insert into pose-generations once the schema lands.
 		meta := map[string]any{
 			"user_id":     userID,
 			"session_id":  sessionID,
 			"kind":        "pose-transfer",
 			"model":       model,
+			"bucket":      gcsBucket,
 			"pose_path":   posePath,
 			"result_path": resultPath,
 			"created_at":  time.Now().UTC().Format(time.RFC3339),

@@ -94,7 +94,7 @@ export default function GalleryView() {
                 const token = await getToken();
                 if (!token) throw new Error("Missing auth token");
 
-                await fetch(backendApiUrl("/api/users/bootstrap"), {
+                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -107,6 +107,13 @@ export default function GalleryView() {
                         email_id: user?.primaryEmailAddress?.emailAddress ?? "",
                     }),
                 });
+                if (!bootstrapResp.ok) {
+                    const payload = await bootstrapResp.json().catch(() => null);
+                    if (payload?.code === "provision_failed") {
+                        router.replace("/sign-up");
+                        return;
+                    }
+                }
 
                 const response = await fetch(backendApiUrl("/api/users"), {
                     headers: {

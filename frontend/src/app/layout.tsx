@@ -58,6 +58,12 @@ export default async function RootLayout({
 
                 <Show when="signed-in">
                   <Link
+                    href="/history"
+                    className="hidden rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-100 sm:inline-block"
+                  >
+                    History
+                  </Link>
+                  <Link
                     href="/profile"
                     className="hidden rounded-full border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 transition-colors hover:border-zinc-600 hover:bg-zinc-800 hover:text-zinc-100 sm:inline-block"
                   >

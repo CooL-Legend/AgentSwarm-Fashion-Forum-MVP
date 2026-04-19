@@ -1,3 +1,95 @@
+# DB-Backed User Input Images + Try-On Generations
+
+## What changed
+
+**Problem:** Try-on and pose-transfer assets were written to GCS only — `meta.json` sidecars were the only record of a generation. Re-uploading the same user photo silently duplicated it in GCS. Nothing was queryable via DB.
+
+**Solution:** Shifted the storage architecture so that every uploaded user photo and every try-on result also becomes a Supabase row:
+
+- **`user-input-images`** — one row per uploaded user photo, deduped on SHA-256 of the raw bytes. Written from `/api/upload-asset` when `kind == "input"`.
+- **`tryon-generations`** — one row per successful try-on API call, referencing the input photo's GCS URL and the garment's `product_id`.
+
+GCS remains the source of truth for image bytes (layout unchanged: `users/{uid}/input/*`, `users/{uid}/tryon/{sid}/result.png`, plus `meta.json` sidecar). DB rows store **full `https://storage.googleapis.com/agent_swarm/...` URLs** so the DB is self-describing.
+
+Pose transfer DB writes are deferred until a `pose-generations` schema lands — `savePoseTransferSession` currently writes to GCS only.
+
+## Tables used (already exist in Supabase)
+
+Assumed columns on each table — any mismatch will surface loudly as a PostgREST 400 naming the bad column:
+
+- `user-input-images`: `user_id` (text), `gcs_url` (text), `hash` (text), `view_type` (smallint, defaults to 1=front), `description` (text), plus auto `id` and `created_at`.
+- `tryon-generations`: `user_id` (text), `product_id` (text), `gcs_url` (text), `person_image_url` (text), `description` (text), plus auto `id` and `created_at`.
+
+## Files modified
+
+- **`backend/sessions_db.go`** — Rewrote from the interim `insertTryonSession` helper to **`insertTryonGeneration`**. Targets the `tryon-generations` table with the column set above. Uses the existing Supabase REST pattern (`Prefer: return=minimal`).
+- **`backend/user_images_db.go`** *(new)* — Three helpers against `user-input-images`:
+  - `findUserInputImageByHash(userID, hash)` — GET with `user_id=eq.&hash=eq.&limit=1`; returns the existing row or nil.
+  - `insertUserInputImage(payload)` — POST with `Prefer: return=representation` so the generated `id` flows back to the caller (needed for the async caption PATCH).
+  - `updateUserInputImageDescription(id, description)` — PATCH by id, used by the async caption job.
+- **`backend/caption.go`** *(new)* — `captionUserImage(ctx, cfg, mimeType, b64)` calls Vertex AI Gemini (same OAuth + `GEMINI_MODEL` as `poseTransferHandler`, no new env vars). Prompts the model for compact JSON `{ "description": "..." }` and tolerates fenced code blocks in the reply.
+- **`backend/gcs.go`** — Added `gcsPublicURL(objectPath)` helper returning `https://storage.googleapis.com/agent_swarm/{path}` so the same URL format is used everywhere a DB row references a GCS object.
+- **`backend/api.go`** — Three touch-points:
+  - **`/api/upload-asset`** — when `kind == "input"`: SHA-256 the raw bytes, check `user-input-images` for an existing `(user_id, hash)` match. On hit, short-circuit and return the stored `gcs_url` with `duplicate: true` (no GCS upload). On miss, upload to GCS, insert the row with `view_type: 1`, and spawn a goroutine that captions the image via Gemini and PATCHes the `description`. `kind == "pose"` path is unchanged (GCS-only).
+  - **`saveTryOnSession`** — swapped the old `insertTryonSession` call for **`insertTryonGeneration`**, passing `product_id` (= `garmentID`), full `gcs_url` (= result URL), and `person_image_url` (= input URL). The `meta.json` GCS sidecar is still written for legacy walkers.
+  - **`savePoseTransferSession`** — removed the DB call; left a `// TODO: insert into pose-generations when the schema lands` marker. `meta.json` sidecar still written.
+
+## Behavior notes
+
+- **Dedup semantics:** Hash is over the raw decoded image bytes (not the base64 string), so the same photo re-uploaded via a different browser, a different data-URL wrapper, or a different session still hits the dedup index on `(user_id, hash)`.
+- **Dedup-hit response:** `/api/upload-asset` returns `{ duplicate: true, id, gcs_url, object_path, gs_uri }` without re-uploading to GCS.
+- **Caption latency:** Caption job runs in a goroutine with a 45s timeout. The upload response returns immediately with `description` still null in the row; a subsequent fetch picks up the populated description (~3-5s typical).
+- **No API surface changes** for `/api/tryon` or `/api/pose-transfer` — existing handlers already call the save helpers.
+
+## Retired
+
+- The interim `tryon-sessions` table (added earlier this session) is no longer referenced by any code path. Drop it from Supabase at your convenience.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed.
+- **End-to-end (pending manual run):**
+  1. Upload a new photo via `/api/upload-asset` with `kind=input` → expect a new row in `user-input-images` with `description` null, then re-fetch ~3-5s later to see the populated description.
+  2. Re-upload the same photo → expect `duplicate: true` in the response and no new GCS object.
+  3. Trigger a try-on from the gallery → expect a row in `tryon-generations` with full `https://storage.googleapis.com/agent_swarm/...` URLs in `gcs_url` and `person_image_url` and `product_id` matching the garment.
+
+---
+
+# Merge Conflict Resolution + Next.js 16 Proxy Migration
+
+## What changed
+
+**Problem:** The local `adi` branch had an incomplete merge (commit `e738358`) that left raw conflict markers in 10 files across backend and frontend, breaking both `go build` and `npm run dev` (JSON parse error on `package.json`). Separately, Next.js 16 deprecated the `middleware` file convention in favor of `proxy`, and both files were present, causing a startup crash.
+
+**Solution:** Resolved every conflict by keeping the incoming `origin/adi` (`>>>>>>> 0c25ba1...`) side, regenerated the lockfile, and removed the deprecated `middleware.ts` so only `proxy.ts` remains.
+
+## Files modified
+
+- **`backend/gcs.go`** — Replaced HEAD's configurable `cfg.GCSBucket` + user-folder helpers with the origin/adi version: hardcoded `gcsBucket = "agent_swarm"`, `gcsUpload` returns `error` only (mimeType before data), added `gcsUploadBase64`, `gcsDownload`, `gcsList`, `gcsSignedURL` (V4 RSA-SHA256 signing) plus helpers `canonicalV4Query`, `v4Escape`, `pathEscapeGCS`, `rsaSignSHA256`. Dropped HEAD-only `gcsHealthHandler`, `gcsUploadInputHandler`, `gcsListUserImagesHandler`.
+- **`backend/api.go`** — 3 conflict regions resolved:
+  - `tryOnRequest` struct: added `GarmentID string` field.
+  - `tryOnHandler`: replaced inline GCS storage block with single `saveTryOnSession(...)` call.
+  - `poseTransferHandler`: replaced inline GCS storage block with single `savePoseTransferSession(...)` call.
+- **`backend/main.go`** — Replaced HEAD handlers (`/api/gcs-health`, `/api/upload-input`, `/api/user-images`) with origin/adi handlers (`/api/upload-asset`, `/api/upload-profile`, `/api/user-assets`).
+- **`frontend/src/app/layout.tsx`** — Switched to incoming Clerk imports (`Show`, `SignInButton`, `SignUpButton`, `UserButton`), moved `ClerkProvider` outside `<html>`, replaced "FashionHub" branding with "inspirationboard" and Clerk's modal auth UI. Removed server-side `auth()` call since signed-in/out state now comes from `<Show>`.
+- **`frontend/src/app/sign-in/[[...sign-in]]/page.tsx`** — Reverted to simple centered `<SignIn />` without custom theme variables.
+- **`frontend/src/app/sign-up/[[...sign-up]]/page.tsx`** — Reverted to simple centered `<SignUp />` without custom theme variables.
+- **`frontend/src/app/components/TryOnResultModal.tsx`** — Removed `userId` prop; sources user via `useUser()` hook from Clerk. Always sends `user_id: user?.id` in pose-transfer requests.
+- **`frontend/src/app/components/GalleryView.tsx`** — Removed duplicate `useUser` import and duplicate `const { user } = useUser()` declaration. `startTryOn` now passes `garmentImageUrl: tryOnImage.imageUrl`, `userId: user?.id`, and `garmentId: tryOnImage.garmentId`.
+- **`frontend/src/app/hooks/useTryOnTask.ts`** — Added optional `garmentId` to `TryOnTaskInput`; always sends `user_id` and `garment_id` in `/api/tryon` body.
+- **`frontend/package-lock.json`** — Deleted and regenerated via `npm install --prefix frontend` since lockfile merges are error-prone.
+- **`frontend/src/middleware.ts`** *(removed)* — Deprecated Next.js 16 convention. Routes now protected via `frontend/src/proxy.ts` only (which has the broader `/gallery`, `/profile`, `/onboarding` matcher).
+- **`backend/fashion-forum-backend`** *(removed)* — Stale binary with conflict markers baked into compiled strings; rebuilt clean.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build .` passed.
+- **Frontend type check:** `npx tsc --noEmit` passed.
+- **Conflict marker sweep:** `grep -rn "<<<<<<" backend/ frontend/src/ frontend/package*.json` returned zero matches in source files.
+- **Dev server:** `npm run run_frontend` no longer crashes with the middleware/proxy collision error.
+
+---
+
 # Header Profile Tab (Authenticated Users)
 
 ## What changed

@@ -137,6 +137,10 @@ export default function OnboardingPage() {
 
                 const bootstrapPayload = await bootstrapResponse.json().catch(() => null);
                 if (!bootstrapResponse.ok) {
+                    if (bootstrapPayload?.code === "provision_failed") {
+                        router.replace("/sign-up");
+                        return;
+                    }
                     throw new Error(bootstrapPayload?.error || "Failed to initialize user profile");
                 }
 

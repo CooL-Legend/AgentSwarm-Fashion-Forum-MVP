@@ -20,6 +20,12 @@ import (
 
 const gcsBucket = "agent_swarm"
 
+// gcsPublicURL returns the canonical https URL for an object (regardless of bucket ACL).
+// Useful as a stable string reference to persist in the database.
+func gcsPublicURL(objectPath string) string {
+	return "https://storage.googleapis.com/" + gcsBucket + "/" + objectPath
+}
+
 // gcsUpload writes raw bytes to gs://agent_swarm/{objectPath} using the service account OAuth token.
 func gcsUpload(ctx context.Context, cfg AppConfig, objectPath, mimeType string, data []byte) error {
 	token, err := getAccessToken(ctx, cfg)

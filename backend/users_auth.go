@@ -196,6 +196,32 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
+		// Step 1: ensure a row exists in public.users for this Clerk identity.
+		// public.users.user_id (text PK) stores the Clerk id directly. Everything
+		// else in this handler is best-effort; if this fails the user cannot be
+		// gated into the app.
+		provisionFields := map[string]any{}
+		if v := cleanOptionalString(input.FirstName); v != nil {
+			provisionFields["first_name"] = *v
+		}
+		if v := cleanOptionalString(input.LastName); v != nil {
+			provisionFields["last_name"] = *v
+		}
+		if v := cleanOptionalString(input.Username); v != nil {
+			provisionFields["username"] = *v
+		}
+		if v := cleanOptionalString(input.EmailID); v != nil {
+			provisionFields["email_id"] = *v
+		}
+		if err := upsertUserByClerkID(r.Context(), cfg, userID, provisionFields); err != nil {
+			log.Printf("[api/users/bootstrap] provision_failed userId=%s err=%v", userID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "User provisioning failed",
+				"code":  "provision_failed",
+			})
+			return
+		}
+
 		now := time.Now().UTC().Format(time.RFC3339)
 		payload := map[string]any{
 			"user_id":    userID,

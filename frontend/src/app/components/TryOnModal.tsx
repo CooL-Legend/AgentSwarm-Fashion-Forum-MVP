@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useUser } from "@clerk/nextjs";
 import { backendApiUrl } from "@/lib/backend-api";
+import { useImageEnrichment } from "../hooks/useImageEnrichment";
+import EnrichmentStatusPill from "./EnrichmentStatusPill";
 
 interface Props {
     garmentImageUrl: string;
@@ -10,6 +13,8 @@ interface Props {
 }
 
 export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: Props) {
+    const { user } = useUser();
+    const { state: enrichment, startEnrichment, reset: resetEnrichment } = useImageEnrichment();
     const [personPreview, setPersonPreview] = useState<string | null>(null);
     const [personBase64, setPersonBase64] = useState<string | null>(null);
     const [processing, setProcessing] = useState(false);
@@ -46,9 +51,12 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
             setPersonBase64(dataUrl);
             setResultImage(null);
             setError(null);
+            if (user?.id) {
+                startEnrichment({ userId: user.id, imageBase64: dataUrl });
+            }
         };
         reader.readAsDataURL(file);
-    }, []);
+    }, [user?.id, startEnrichment]);
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -196,7 +204,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
                                             className="h-full w-full object-cover"
                                         />
                                         <button
-                                            onClick={() => { setPersonPreview(null); setPersonBase64(null); }}
+                                            onClick={() => { setPersonPreview(null); setPersonBase64(null); resetEnrichment(); }}
                                             className="absolute right-2 top-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition-colors hover:bg-red-500/80"
                                         >
                                             <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -346,6 +354,18 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
                         </div>
                     )}
 
+                    {/* Enrichment status */}
+                    {(enrichment.status === "uploading" || enrichment.status === "understanding" || enrichment.status === "ready" || enrichment.status === "error") && (
+                        <div className="mt-4">
+                            <EnrichmentStatusPill
+                                status={enrichment.status}
+                                tryonRunning={processing}
+                                error={enrichment.error}
+                                onDismiss={resetEnrichment}
+                            />
+                        </div>
+                    )}
+
                     {/* Error */}
                     {error && (
                         <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/5 px-4 py-3">
@@ -370,7 +390,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
                     {resultImage ? (
                         <>
                             <button
-                                onClick={() => { setResultImage(null); setPersonPreview(null); setPersonBase64(null); setPoseImageBase64(null); setPosePreview(null); setPoseResultImage(null); setShowPoseResult(false); }}
+                                onClick={() => { setResultImage(null); setPersonPreview(null); setPersonBase64(null); setPoseImageBase64(null); setPosePreview(null); setPoseResultImage(null); setShowPoseResult(false); resetEnrichment(); }}
                                 className="rounded-xl px-4 py-2.5 text-sm text-zinc-400 transition-colors hover:text-zinc-200"
                             >
                                 Try Another
