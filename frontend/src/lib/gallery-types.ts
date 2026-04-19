@@ -3,6 +3,9 @@ export interface ProductCardItem {
     image_url: string;
     all_image_urls: string[] | null;
     title: string | null;
+    brand: string | null;
+    price: number | null;
+    gender: string | null;
     created_at: string | null;
 }
 

@@ -7,6 +7,8 @@ import {
     useRef,
     useState,
 } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth, useUser } from "@clerk/nextjs";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
 import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
@@ -42,15 +44,22 @@ function columnsClass(columns: number): string {
 }
 
 export default function GalleryView() {
+    const router = useRouter();
+    const { isLoaded, isSignedIn, getToken } = useAuth();
+    const { user } = useUser();
+
     const [images, setImages] = useState<ProductCardItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
+    const [userId, setUserId] = useState<string | null>(null);
+    const [userGender, setUserGender] = useState<string | null>(null);
+    const [genderResolved, setGenderResolved] = useState(false);
     const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
-    const [tryOnImage, setTryOnImage] = useState<string | null>(null);
+    const [tryOnImage, setTryOnImage] = useState<{ imageUrl: string; garmentId?: string } | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
     const [hasMore, setHasMore] = useState(true);
     const [total] = useState<number | null>(null);
@@ -70,6 +79,95 @@ export default function GalleryView() {
     const requestIdRef = useRef(0);
 
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
+
+    useEffect(() => {
+        if (!isLoaded) return;
+        if (!isSignedIn) {
+            router.replace("/sign-in");
+            return;
+        }
+
+        let cancelled = false;
+
+        const loadCurrentUser = async () => {
+            try {
+                const token = await getToken();
+                if (!token) throw new Error("Missing auth token");
+
+                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        first_name: user?.firstName ?? "",
+                        last_name: user?.lastName ?? "",
+                        username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
+                        email_id: user?.primaryEmailAddress?.emailAddress ?? "",
+                    }),
+                });
+                if (!bootstrapResp.ok) {
+                    const payload = await bootstrapResp.json().catch(() => null);
+                    if (payload?.code === "provision_failed") {
+                        router.replace("/sign-up");
+                        return;
+                    }
+                }
+
+                const response = await fetch(backendApiUrl("/api/users"), {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        router.replace("/onboarding");
+                        return;
+                    }
+                    throw new Error("Failed to load user");
+                }
+
+                const payload = await response.json();
+                const appUser = payload?.user ?? payload;
+
+                const isComplete = appUser?.onboarding_completed === true;
+                const isSkipped = appUser?.onboarding_skipped === true;
+                if (!isComplete && !isSkipped) {
+                    router.replace("/onboarding");
+                    return;
+                }
+
+                const raw = appUser?.sex;
+                const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+                const genderMap: Record<string, string> = {
+                    male: "men",
+                    female: "women",
+                    non_binary: "",
+                    prefer_not_to_say: "",
+                };
+                if (!cancelled) {
+                    setUserGender(sex ? (genderMap[sex] ?? sex) : null);
+                    if (appUser?.user_id) setUserId(appUser.user_id);
+                }
+            } catch (error) {
+                if (!cancelled) {
+                    setUserGender(null);
+                    setError(error instanceof Error ? error.message : "Failed to load user profile");
+                }
+            } finally {
+                if (!cancelled) {
+                    setGenderResolved(true);
+                }
+            }
+        };
+
+        loadCurrentUser();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [getToken, isLoaded, isSignedIn, router, user]);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
@@ -102,6 +200,9 @@ export default function GalleryView() {
             }
             if (debouncedSearch) {
                 params.set("q", debouncedSearch);
+            }
+            if (userGender) {
+                params.set("gender", userGender);
             }
 
             try {
@@ -155,7 +256,7 @@ export default function GalleryView() {
                 }
             }
         },
-        [debouncedSearch],
+        [debouncedSearch, userGender],
     );
 
     useEffect(() => {
@@ -169,8 +270,10 @@ export default function GalleryView() {
         setImages([]);
         setHasMore(true);
         setNextCursor(null);
-        fetchProducts({ cursor: null, reset: true });
-    }, [debouncedSearch, fetchProducts]);
+        if (genderResolved) {
+            fetchProducts({ cursor: null, reset: true });
+        }
+    }, [debouncedSearch, fetchProducts, genderResolved]);
 
     useEffect(() => {
         return () => {
@@ -317,7 +420,7 @@ export default function GalleryView() {
                                 <p className="text-[10px] text-zinc-500">Click &quot;Try On&quot; to see it on you</p>
                             </div>
                             <button
-                                onClick={() => setTryOnImage(garmentSelection.imageUrl!)}
+                                onClick={() => setTryOnImage({ imageUrl: garmentSelection.imageUrl!, garmentId: garmentSelection.localProduct?.id !== undefined ? String(garmentSelection.localProduct.id) : undefined })}
                                 className="shrink-0 rounded-lg bg-amber-500 px-4 py-2 text-xs font-semibold text-black transition-colors hover:bg-amber-400"
                             >
                                 Try On
@@ -338,7 +441,7 @@ export default function GalleryView() {
                     {Array.from({ length: 12 }).map((_, index) => (
                         <div
                             key={index}
-                            className="h-[300px] animate-pulse rounded-2xl bg-zinc-800/60"
+                            className="h-[360px] animate-pulse rounded-2xl bg-zinc-800/60"
                             style={{ animationDelay: `${index * 60}ms` }}
                         />
                     ))}
@@ -468,8 +571,8 @@ export default function GalleryView() {
                         });
                         setLightbox(null);
                     }}
-                    onTryOn={(imageUrl) => {
-                        setTryOnImage(imageUrl);
+                    onTryOn={(imageUrl, garmentId) => {
+                        setTryOnImage({ imageUrl, garmentId });
                         setLightbox(null);
                     }}
                 />
@@ -477,10 +580,15 @@ export default function GalleryView() {
 
             {tryOnImage && (
                 <TryOnModal
-                    garmentImageUrl={tryOnImage}
+                    garmentImageUrl={tryOnImage.imageUrl}
                     onClose={() => setTryOnImage(null)}
                     onTryOnSubmit={(personBase64) => {
-                        startTryOn({ personBase64, garmentImageUrl: tryOnImage });
+                        startTryOn({
+                            personBase64,
+                            garmentImageUrl: tryOnImage.imageUrl,
+                            userId: user?.id,
+                            garmentId: tryOnImage.garmentId,
+                        });
                         setTryOnImage(null);
                     }}
                 />
@@ -500,6 +608,7 @@ export default function GalleryView() {
                     personPreview={task.personPreview}
                     garmentImageUrl={task.garmentUrl}
                     resultImage={task.resultImage}
+                    userId={userId}
                     onClose={() => {
                         setShowTryOnResult(false);
                         dismiss();

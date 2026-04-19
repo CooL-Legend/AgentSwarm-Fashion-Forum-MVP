@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { backendApiUrl } from "@/lib/backend-api";
 import type { UserProfile } from "@/lib/user-types";
 import ProfileHeader from "./ProfileHeader";
@@ -56,36 +58,89 @@ function ProfileSkeleton() {
 }
 
 export default function ProfileView() {
+    const router = useRouter();
+    const { isLoaded, isSignedIn, getToken } = useAuth();
+    const { user: clerkUser } = useUser();
+
     const [user, setUser] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        if (!isLoaded) return;
+        if (!isSignedIn) {
+            router.replace("/sign-in");
+            return;
+        }
+
         const controller = new AbortController();
         setLoading(true);
         setError(null);
 
-        fetch(backendApiUrl("/api/users"), { signal: controller.signal })
-            .then((res) => {
-                if (!res.ok) {
-                    if (res.status === 404) throw new Error("User not found.");
+        const loadProfile = async () => {
+            try {
+                const token = await getToken();
+                if (!token) throw new Error("No auth token found.");
+
+                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
+                    method: "POST",
+                    signal: controller.signal,
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
+                    body: JSON.stringify({
+                        first_name: clerkUser?.firstName ?? "",
+                        last_name: clerkUser?.lastName ?? "",
+                        username: clerkUser?.username ?? clerkUser?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
+                        email_id: clerkUser?.primaryEmailAddress?.emailAddress ?? "",
+                    }),
+                });
+                if (!bootstrapResp.ok) {
+                    const payload = await bootstrapResp.json().catch(() => null);
+                    if (payload?.code === "provision_failed") {
+                        router.replace("/sign-up");
+                        return;
+                    }
+                }
+
+                const response = await fetch(backendApiUrl("/api/users"), {
+                    signal: controller.signal,
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                    },
+                });
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        router.replace("/onboarding");
+                        return;
+                    }
                     throw new Error("Failed to load profile.");
                 }
-                return res.json();
-            })
-            .then((data) => {
-                setUser(data.user);
-                setLoading(false);
-            })
-            .catch((err) => {
-                if (err.name !== "AbortError") {
-                    setError(err.message);
-                    setLoading(false);
+
+                const data = await response.json();
+                const appUser = data?.user;
+                const isComplete = appUser?.onboarding_completed === true;
+                const isSkipped = appUser?.onboarding_skipped === true;
+                if (!isComplete && !isSkipped) {
+                    router.replace("/onboarding");
+                    return;
                 }
-            });
+
+                setUser(appUser);
+                setLoading(false);
+            } catch (err: unknown) {
+                if (controller.signal.aborted) return;
+                const message = err instanceof Error ? err.message : "Failed to load profile.";
+                setError(message);
+                setLoading(false);
+            }
+        };
+
+        loadProfile();
 
         return () => controller.abort();
-    }, []);
+    }, [clerkUser, getToken, isLoaded, isSignedIn, router]);
 
     return (
         <main className="mx-auto max-w-6xl px-4 py-8">
