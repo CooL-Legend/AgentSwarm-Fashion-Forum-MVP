@@ -942,3 +942,70 @@ Copy and visual framing now center on three active surfaces only: **Marketplace*
   - Secondary CTA anchors to `#how-it-works`
 - Frontend build command was run (`cd frontend && npm run build`) and failed due to a pre-existing unrelated issue:
   - `Module not found: Can't resolve '@/lib/supabase-server'` in `frontend/src/app/api/products/route.ts`.
+
+---
+
+# New-User Provisioning: Enriched `ensureUserRow` + Shared `UserProvider`
+
+## Context
+
+**Problem:** New sign-ups were not landing in `public.users`. Two distinct issues chained together:
+
+1. **No trigger.** After Clerk sign-up, users were being redirected back to `/` (because the header's `<SignInButton>` captures the current URL as `redirect_url`, overriding `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL=/profile`). The home page is a server component with no `backendFetch` call, so the backend never saw an authenticated request and `ensureUserRow` ([backend/users_auth.go](backend/users_auth.go)) never fired.
+2. **Sparse rows + NOT NULL.** Once the backend was hit, `ensureUserRow` was inserting only `{id, created_at, updated_at}`. Two consequences: (a) rows lacked `email`, `first_name`, `last_name`, `clerk_image_url`, `auth_provider`, and (b) Supabase rejected the insert with `23502 null value in column "username" violates not-null constraint` because Google OAuth sign-ups always return `username: null` from Clerk.
+
+**Secondary problem:** Once provisioning was wired up, `/api/users` was being hit 8+ times per page load because `UserBootstrap`, `ProfileView`, and `GalleryView` all fetched it independently on mount. The backend `seenUsers` cache absorbed the load, but it was noisy and redundant.
+
+**Intended outcome:** every sign-up lands in `public.users` with Clerk profile fields populated and `onboarding_completed=false`, regardless of which route Clerk redirects to — and the frontend fetches `/api/users` exactly once per signed-in session.
+
+## 1. Backend: enrich `ensureUserRow` from Clerk Backend API
+
+- **`backend/users_auth.go`** — added `clerkUserPayload` struct + `fetchClerkUser(ctx, cfg, userID)` helper that GETs `https://api.clerk.com/v1/users/{id}` with `Authorization: Bearer <CLERK_SECRET_KEY>` (10s timeout). Decodes only the fields we use: `id`, `email_addresses[]`, `primary_email_address_id`, `first_name`, `last_name`, `username`, `image_url`, `external_accounts[].provider`.
+- Added helper methods `primaryEmail()` (matches `primary_email_address_id` against `email_addresses[].id`, falls back to `email_addresses[0]`) and `authProvider()` (`external_accounts[0].provider` with `oauth_` prefix stripped → `google` / `apple` / etc.; falls back to `"email"`).
+- **`ensureUserRow`** refactored:
+  - Always sets `onboarding_completed: false` on insert.
+  - Always seeds `"username": userID` in the base insert row so the NOT NULL constraint is satisfied even when the Clerk fetch fails entirely. Clerk-provided username (when present) overrides it; the user replaces it during onboarding.
+  - **Enrich-on-exists path:** if `fetchUserByID` returns a row but `email` is still null (i.e. a sparse row from the pre-change binary), the function now **PATCHes** the row with the Clerk fields instead of returning early. New `patchUserByID` helper uses `PATCH ?id=eq.<id>` with `Prefer: return=minimal`. Logs `[auth] ensure_user_enriched id=... fields=N` on success.
+  - Insert path extracted into `postUsersInsert` helper; both insert and patch reuse the service-role key + existing idempotency semantics (`Prefer: resolution=ignore-duplicates` on insert).
+- **Logging:** `fetchClerkUser` now logs the raw response body via `[auth] clerk_user_fetch id=... status=200 body=…` (capped at 64 KB). `ensureUserRow` logs the decoded struct via `[auth] ensure_user_clerk_payload id=... payload=…`. Makes sign-up debugging self-evident without attaching a debugger.
+- **Unchanged:** `seenUsers` 5-minute in-memory cache, `fetchUserByID`, `authenticatedClerkUserID`, `AppConfig`, routes, env vars.
+
+## 2. Frontend: `UserProvider` context replaces per-page fetches
+
+- **New:** `frontend/src/app/components/UserProvider.tsx` — client-side React context. Uses Clerk's `useAuth()` to know when to fetch, then hits `GET /api/users` exactly once per `userId` (deduped via `useRef`). Exposes `{ user, loading, error, refetch }` via the `useUserProfile()` hook. Signing out clears the cached user and resets the dedupe ref.
+- **`frontend/src/app/layout.tsx`** — wraps header + `{children}` in `<UserProvider>` inside the existing `<ClerkProvider>`. Replaces the earlier `<UserBootstrap />` component (see below) which only fired the fetch but did not share the result.
+- **`frontend/src/app/components/ProfileView.tsx`** — consumes `useUserProfile()` instead of fetching `/api/users` directly. Its own `/api/images` fetch is retained but now gated on `user` being loaded. Loading + error states flow from the hook.
+- **`frontend/src/app/components/GalleryView.tsx`** — consumes `useUserProfile()`; derives `userGender` (via the existing `male → men` / `female → women` map) and `userId` from `appUser`. `genderResolved` is now `!userLoading`. The `loadCurrentUser` effect and the local `userGender` / `userId` / `genderResolved` `useState` declarations are gone.
+- **Removed:** `frontend/src/app/components/UserBootstrap.tsx` — superseded by `UserProvider`. The provider subsumes its dedupe-fire-and-forget behavior and additionally shares the fetched user with descendants, so `ProfileView` and `GalleryView` no longer need their own `/api/users` calls.
+
+## Scope explicitly deferred
+
+Per instructions to keep the delta focused on provisioning:
+
+- `/onboarding` route + gate that redirects users with `onboarding_completed=false` — flowchart calls for this but was intentionally left for a follow-up.
+- Post-signup redirect to `/profile` or `/gallery` (instead of home) — requires either a custom sign-up form that sets `afterSignUpUrl` explicitly, or a client-side redirect in `UserProvider` based on `onboarding_completed`.
+- Clerk webhooks — explicitly declined by the user in favor of the lazy self-heal path.
+- Header flicker (`<Show when="signed-out">` briefly showing "Sign in" before Clerk hydrates) — untouched.
+
+## Files modified
+
+- **`backend/users_auth.go`** — `clerkUserPayload` + `fetchClerkUser` + `primaryEmail` / `authProvider` helpers; `ensureUserRow` split into insert + patch paths; `postUsersInsert` + `patchUserByID` helpers; Clerk raw-body + decoded-payload logging; `username = userID` fallback for NOT NULL.
+- **`frontend/src/app/components/UserProvider.tsx`** *(new)* — context + `useUserProfile()` hook.
+- **`frontend/src/app/components/UserBootstrap.tsx`** *(deleted)* — replaced by `UserProvider`.
+- **`frontend/src/app/layout.tsx`** — mounts `<UserProvider>` around header + children.
+- **`frontend/src/app/components/ProfileView.tsx`** — reads user from hook; kept its `/api/images` fetch.
+- **`frontend/src/app/components/GalleryView.tsx`** — reads user from hook; derives gender/userId/genderResolved; removed local `/api/users` fetch.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed.
+- **Frontend type check:** `cd frontend && npx tsc --noEmit` passed.
+- **End-to-end sign-up** (Google OAuth, fresh account `aditya.bhandari8876@gmail.com`): backend logs showed `[auth] clerk_user_fetch id=user_... status=200 body=…`, `[auth] ensure_user_clerk_payload id=user_... payload=…`, `[auth] authed user=user_... GET /api/users`, and `GET /api/users 1.074s` on the first hit. Row appeared in Supabase with `email`, `first_name`, `last_name`, `clerk_image_url`, `auth_provider='google'`, `onboarding_completed=false`, and `username=<Clerk user id>` (temporary).
+- **Username NOT NULL fix verified:** prior insert attempt had failed with `status=400 code=23502` on `username`; after seeding `"username": userID` the insert succeeded.
+- **Dedupe verified:** after landing on the home page, subsequent navigations to `/gallery` and `/profile` no longer trigger additional `/api/users` network calls — the context-provided user is reused. Backend `seenUsers` cache still acts as a second layer.
+
+## End-to-end tests (pending manual run)
+
+- Sign-up where `first_name` / `last_name` are **absent** from Clerk (e.g., email-only sign-up) — verify `auth_provider='email'`, row still created with username fallback.
+- Existing sparse row (pre-change binary) → next authed request should trigger `ensure_user_enriched fields=N` PATCH log and populate the missing fields.
+- `CLERK_SECRET_KEY` unset → `ensure_user_clerk_fetch_failed` warning, row still inserted with just `id + created_at + updated_at + onboarding_completed=false + username=<clerk_id>`.
