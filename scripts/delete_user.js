@@ -1,14 +1,14 @@
 // delete_user.js
-// Delete a user from Clerk + public.users (Supabase).
-// Usage: node scripts/delete_user.js <clerk_user_id>
+// Delete a user from Clerk + public.users (Supabase) by email.
+// Usage: node scripts/delete_user.js <email>
 // CASCADE on public.users FKs will take down tryon_generations + user_input_images automatically.
 
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 
-const userId = process.argv[2];
-if (!userId) {
-    console.error("Usage: node scripts/delete_user.js <clerk_user_id>");
+const email = process.argv[2];
+if (!email) {
+    console.error("Usage: node scripts/delete_user.js <email>");
     process.exit(1);
 }
 
@@ -21,7 +21,34 @@ if (!supabaseUrl || !serviceKey) {
     process.exit(1);
 }
 
-async function deleteFromSupabase() {
+async function lookupClerkUserId() {
+    if (!clerkSecret) return null;
+    const url = `https://api.clerk.com/v1/users?email_address=${encodeURIComponent(email)}`;
+    const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${clerkSecret}` },
+    });
+    const body = await resp.text();
+    if (!resp.ok) throw new Error(`Clerk lookup ${resp.status}: ${body}`);
+    const users = body ? JSON.parse(body) : [];
+    if (!users.length) return null;
+    return users[0].id;
+}
+
+async function lookupSupabaseUserId() {
+    const url = `${supabaseUrl}/rest/v1/users?email=eq.${encodeURIComponent(email)}&select=id`;
+    const resp = await fetch(url, {
+        headers: {
+            apikey: serviceKey,
+            Authorization: `Bearer ${serviceKey}`,
+        },
+    });
+    const body = await resp.text();
+    if (!resp.ok) throw new Error(`Supabase lookup ${resp.status}: ${body}`);
+    const rows = body ? JSON.parse(body) : [];
+    return rows.length ? rows[0].id : null;
+}
+
+async function deleteFromSupabase(userId) {
     const url = `${supabaseUrl}/rest/v1/users?id=eq.${encodeURIComponent(userId)}`;
     const resp = await fetch(url, {
         method: "DELETE",
@@ -37,7 +64,7 @@ async function deleteFromSupabase() {
     console.log(`✓ Supabase: removed ${rows.length} row(s) from public.users`);
 }
 
-async function deleteFromClerk() {
+async function deleteFromClerk(userId) {
     if (!clerkSecret) {
         console.log("… Clerk: skipped (CLERK_SECRET_KEY not set)");
         return;
@@ -56,15 +83,42 @@ async function deleteFromClerk() {
 }
 
 (async () => {
-    console.log(`Deleting user: ${userId}`);
+    console.log(`Deleting user: ${email}`);
+
+    let clerkUserId = null;
     try {
-        await deleteFromSupabase();
+        clerkUserId = await lookupClerkUserId();
+        if (clerkUserId) console.log(`  → Clerk id: ${clerkUserId}`);
+        else console.log("  → Clerk: no user found for that email");
     } catch (err) {
-        console.error("✗ Supabase delete failed:", err.message);
+        console.error("✗ Clerk lookup failed:", err.message);
     }
-    try {
-        await deleteFromClerk();
-    } catch (err) {
-        console.error("✗ Clerk delete failed:", err.message);
+
+    let supabaseUserId = clerkUserId;
+    if (!supabaseUserId) {
+        try {
+            supabaseUserId = await lookupSupabaseUserId();
+            if (supabaseUserId) console.log(`  → Supabase id: ${supabaseUserId}`);
+        } catch (err) {
+            console.error("✗ Supabase lookup failed:", err.message);
+        }
+    }
+
+    if (supabaseUserId) {
+        try {
+            await deleteFromSupabase(supabaseUserId);
+        } catch (err) {
+            console.error("✗ Supabase delete failed:", err.message);
+        }
+    } else {
+        console.log("… Supabase: skipped (no matching user id)");
+    }
+
+    if (clerkUserId) {
+        try {
+            await deleteFromClerk(clerkUserId);
+        } catch (err) {
+            console.error("✗ Clerk delete failed:", err.message);
+        }
     }
 })();
