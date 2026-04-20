@@ -25,16 +25,16 @@ const IDENTITIES = [
 ];
 
 const MAJOR_BUYS = [
-    { value: "tshirts", label: "T-shirts / Shirts" },
+    { value: "tshirts_shirts", label: "T-shirts / Shirts" },
     { value: "jackets_outerwear", label: "Jackets & Outerwear" },
     { value: "jeans_trousers", label: "Jeans / Trousers" },
 ];
 
 const SEASONAL = [
-    { value: "summer_breathable_linen", label: "Summer / Breathable Linen" },
-    { value: "tech_wear", label: "Tech-wear" },
+    { value: "summer_breathable", label: "Summer / Breathable" },
+    { value: "summer_techwear", label: "Summer / Tech-wear" },
     { value: "winter_heavy_layering", label: "Winter / Heavy Layering" },
-    { value: "sharp_overcoats", label: "Sharp Overcoats" },
+    { value: "winter_sharp_overcoats", label: "Winter / Sharp Overcoats" },
 ];
 
 const TSHIRT_FIT = [
@@ -50,10 +50,10 @@ const JEANS_FIT = [
 ];
 
 const COLOR_FAMILIES = [
-    { value: "neutrals_concrete_sand", label: "Neutrals (Concrete, Sand)" },
-    { value: "voids_black_charcoal", label: "Voids (Black, Charcoal)" },
-    { value: "earth_olive_rust", label: "Earth (Olive, Rust)" },
-    { value: "vibrants_neons", label: "Vibrants (Neons)" },
+    { value: "neutrals", label: "Neutrals (Concrete, Sand)" },
+    { value: "voids", label: "Voids (Black, Charcoal)" },
+    { value: "earth", label: "Earth (Olive, Rust)" },
+    { value: "vibrants", label: "Vibrants (Neons)" },
 ];
 
 const ACTIVITIES = [
@@ -65,15 +65,16 @@ const ACTIVITIES = [
 
 const FIT_FRUSTRATIONS = [
     { value: "shoulder_pinch", label: "The Shoulder Pinch" },
-    { value: "tent_effect", label: "Tent Effect" },
-    { value: "arm_bicep_trap", label: "Arm / Bicep Trap" },
-    { value: "quad_struggle", label: "Quad Struggle" },
+    { value: "bicep_trap", label: "Bicep Trap" },
     { value: "torso_crop", label: "Torso Crop" },
-    { value: "waist_gap", label: "Waist Gap" },
-    { value: "bust_fit_tension", label: "Bust Fit Tension" },
-    { value: "hip_constraint", label: "Hip Constraint" },
     { value: "rise_struggle", label: "Rise Struggle" },
+    { value: "quad_struggle", label: "Quad Struggle" },
     { value: "petite_tall_sleeve", label: "Petite / Tall Sleeve" },
+    { value: "bust_gape", label: "Bust Gape" },
+    { value: "waist_gap", label: "Waist Gap" },
+    { value: "hip_constraint", label: "Hip Constraint" },
+    { value: "tent_effect", label: "Tent Effect" },
+    { value: "tall_sleeve", label: "Tall Sleeve" },
 ];
 
 type Phase = 1 | 2 | 3;

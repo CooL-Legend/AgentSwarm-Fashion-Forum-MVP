@@ -10,15 +10,13 @@ import (
 	"time"
 )
 
-// view_type stored in user_input_images uses the convention:
-//   1 = front, 0 = back
-// The HF classifier Space returns is_front as 0/1 on the same convention,
-// so the mapping is an identity — we still pipe it through explicit constants
-// and a mapper below so the DB value is never derived implicitly from an
-// upstream API field name.
+// view_type stored in user_input_images is a Postgres enum (`image_view_type`)
+// with two valid values: "front" and "back". The HF classifier Space returns
+// is_front as 0/1; we map that to the enum string here so the DB column never
+// sees a raw integer from the upstream API.
 const (
-	viewTypeFront = 1
-	viewTypeBack  = 0
+	viewTypeFront = "front"
+	viewTypeBack  = "back"
 )
 
 type classifyResponse struct {
@@ -26,8 +24,8 @@ type classifyResponse struct {
 }
 
 // mapIsFrontToViewType converts the classifier's is_front flag into the DB
-// view_type value. 1 (is_front=true) → front; 0 (is_front=false) → back.
-func mapIsFrontToViewType(isFront int) int {
+// view_type enum value. 1 (is_front=true) → "front"; 0 → "back".
+func mapIsFrontToViewType(isFront int) string {
 	if isFront == 1 {
 		return viewTypeFront
 	}
@@ -35,9 +33,9 @@ func mapIsFrontToViewType(isFront int) int {
 }
 
 // classifyViewType posts the image URL to the HF front/back classifier Space
-// and returns the DB-ready view_type: 1 (front) or 0 (back). Returns an error
+// and returns the DB-ready view_type: "front" or "back". Returns an error
 // on network / status failures; callers should fall back to viewTypeFront on error.
-func classifyViewType(ctx context.Context, cfg AppConfig, imageURL string) (int, error) {
+func classifyViewType(ctx context.Context, cfg AppConfig, imageURL string) (string, error) {
 	base := strings.TrimRight(strings.TrimSpace(cfg.ViewClassifierURL), "/")
 	if base == "" {
 		return viewTypeFront, fmt.Errorf("view classifier url not configured")

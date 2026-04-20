@@ -22,7 +22,7 @@ func enrichUserInputImage(cfg AppConfig, id, gcsURL, mimeType, b64 string) {
 		var (
 			wg       sync.WaitGroup
 			desc     string
-			viewType = viewTypeFront // default: front view if classifier fails
+			viewType string = viewTypeFront // default: front view if classifier fails
 			descErr  error
 		)
 		wg.Add(2)

@@ -217,7 +217,8 @@ func listUserInputImages(ctx context.Context, cfg AppConfig, userID string) ([]u
 }
 
 // updateUserInputImageEnrichment patches the description and view_type on an existing row in one round-trip.
-func updateUserInputImageEnrichment(ctx context.Context, cfg AppConfig, id, description string, viewType int) error {
+// viewType is the DB enum value ("front" or "back") — see viewclassifier.go.
+func updateUserInputImageEnrichment(ctx context.Context, cfg AppConfig, id, description, viewType string) error {
 	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
 		return fmt.Errorf("supabase not configured")
 	}

@@ -42,36 +42,39 @@ var (
 	tshirtFitOptions = setOf("oversized", "relaxed", "slim_fit")
 	jeansFitOptions  = setOf("oversized_baggy", "relaxed_straight", "slim_tapered")
 
-	majorBuysOptions = setOf("tshirts", "jackets_outerwear", "jeans_trousers")
+	// Option sets must match the CHECK constraints on public.users exactly
+	// (users_major_buys_valid, users_seasonal_preferences_valid, etc.).
+	majorBuysOptions = setOf("tshirts_shirts", "jackets_outerwear", "jeans_trousers")
 	seasonalOptions  = setOf(
-		"summer_breathable_linen",
-		"tech_wear",
+		"summer_breathable",
+		"summer_techwear",
 		"winter_heavy_layering",
-		"sharp_overcoats",
+		"winter_sharp_overcoats",
 	)
 	colorFamilyOptions = setOf(
-		"neutrals_concrete_sand",
-		"voids_black_charcoal",
-		"earth_olive_rust",
-		"vibrants_neons",
+		"voids",
+		"earth",
+		"neutrals",
+		"vibrants",
 	)
 	activityOptions = setOf(
+		"yoga_running",
 		"strength_training",
 		"football_basketball",
-		"yoga_running",
 		"creative_photography",
 	)
 	fitFrustrationOptions = setOf(
 		"shoulder_pinch",
-		"tent_effect",
-		"arm_bicep_trap",
-		"quad_struggle",
+		"bicep_trap",
 		"torso_crop",
-		"waist_gap",
-		"bust_fit_tension",
-		"hip_constraint",
 		"rise_struggle",
+		"quad_struggle",
 		"petite_tall_sleeve",
+		"bust_gape",
+		"waist_gap",
+		"hip_constraint",
+		"tent_effect",
+		"tall_sleeve",
 	)
 )
 
@@ -101,7 +104,7 @@ type appUserProfile struct {
 	OnboardingCompleted   *bool        `json:"onboarding_completed"`
 	OnboardingSkipped     *bool        `json:"onboarding_skipped"`
 	OnboardingCompletedAt *string      `json:"onboarding_completed_at"`
-	OnboardingSkippedAt   *string      `json:"onboarding_skipped_at"`
+	OnboardingSkippedAt   *string      `json:"onboarding_skipped_at,omitempty"`
 
 	Occupation          *string      `json:"occupation"`
 	HeightCM            *float64     `json:"height_cm"`
@@ -385,7 +388,9 @@ func onboardingUserHandler(cfg AppConfig) http.HandlerFunc {
 				}
 			}
 			payload["onboarding_skipped"] = true
-			payload["onboarding_skipped_at"] = now
+			// public.users has no onboarding_skipped_at column — only the completed_at
+			// timestamp is tracked. Intentionally omitted.
+			_ = now
 
 		default:
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phase"})

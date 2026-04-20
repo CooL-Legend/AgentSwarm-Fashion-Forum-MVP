@@ -159,7 +159,61 @@ Separately, input filenames were timestamp + random hex (`20260420_921663842a0da
   - Upload response now always includes `signed_url` for immediate display (no separate sign step needed on the frontend).
 - **`backend/caption.go` `enrichUserInputImage`** — replaced the string-trimming-the-https-prefix trick with `parseGCSURL`, so the enrichment worker works with both new `gs://` rows and legacy `https://` rows.
 
-### 4. New DB-backed `GET /api/images` (replaces GCS-list for the onboarding poll)
+### 4. `view_type` is a Postgres enum (`image_view_type`), not an integer
+
+**Symptom:** First input upload against the live Supabase returned
+```
+22P02 — invalid input value for enum image_view_type: "1"
+```
+
+**Root cause:** The earlier "DB-Backed User Input Images" section had assumed `view_type` was a `smallint` column defaulting to `1=front`. The real column on `public.user_input_images` is an enum `image_view_type` with two valid values: `'front'` and `'back'`. The worker and initial insert were both passing `1`/`0` integers.
+
+**Fix:**
+- **`backend/viewclassifier.go`** — changed the constants from `int` → `string`:
+  - `viewTypeFront = "front"`, `viewTypeBack = "back"`.
+  - `classifyViewType` now returns `(string, error)` and all fallback paths return `viewTypeFront`.
+  - `mapIsFrontToViewType(isFront int) string` converts the HF classifier's `is_front` (0/1) into the enum string at the DB boundary. The HF API still returns 0/1, so the mapping is explicit and any future label-shape change (e.g. classifier returning `{"label":"front"}`) only touches this one function.
+- **`backend/user_images_db.go` `updateUserInputImageEnrichment`** — signature changed to `viewType string`.
+- **`backend/caption.go`** — `viewType` local var typed `string`, default `viewTypeFront`.
+- **`backend/api.go` `uploadAssetHandler`** — initial insert writes `"view_type": viewTypeFront` (provisional; the enrichment worker may PATCH to `viewTypeBack` after classification).
+
+### 5. `public.users` has no `onboarding_skipped_at` column
+
+**Symptom:** `PATCH /api/users/onboarding` with `phase=optional_skip` returned
+```
+PGRST204 — Could not find the 'onboarding_skipped_at' column of 'users' in the schema cache
+```
+
+**Root cause:** The consolidated `public.users` DDL only tracks `onboarding_completed_at`; the `_skipped_at` timestamp was a `user-temp`-era column that didn't make it into the new table. The phase handler was still writing it.
+
+**Fix:**
+- **`backend/users_auth.go`** — removed the `payload["onboarding_skipped_at"] = now` write from the `optional_skip` branch. The `OnboardingSkippedAt` struct field is kept as `omitempty` so the struct still decodes cleanly when PostgREST doesn't populate it.
+
+### 6. Choice-array values didn't match the live CHECK constraints
+
+**Symptom:** Pending — would have surfaced as a PostgREST 400 on the first `optional_save` PATCH with non-empty choice arrays. Caught proactively after the user shared the real DDL.
+
+**Root cause:** The validator option sets in `backend/users_auth.go` and the picker labels in `frontend/src/app/onboarding/page.tsx` were written against the PDF spec, which used longer descriptive slugs. The actual CHECK constraints on `public.users` use shorter canonical forms.
+
+**Fix** — aligned both backend validators and frontend pickers to the DDL `CHECK (<field> <@ ARRAY[...])` lists:
+
+| Field | Old slug | New slug (matches DDL) |
+|---|---|---|
+| `major_buys` | `tshirts` | `tshirts_shirts` |
+| `seasonal_preferences` | `summer_breathable_linen` | `summer_breathable` |
+| `seasonal_preferences` | `tech_wear` | `summer_techwear` |
+| `seasonal_preferences` | `sharp_overcoats` | `winter_sharp_overcoats` |
+| `color_families` | `neutrals_concrete_sand` | `neutrals` |
+| `color_families` | `voids_black_charcoal` | `voids` |
+| `color_families` | `earth_olive_rust` | `earth` |
+| `color_families` | `vibrants_neons` | `vibrants` |
+| `fit_frustrations` | `arm_bicep_trap` | `bicep_trap` |
+| `fit_frustrations` | `bust_fit_tension` | `bust_gape` |
+| `fit_frustrations` | *(absent)* | `tall_sleeve` (added) |
+
+Files touched: `backend/users_auth.go` (`majorBuysOptions`, `seasonalOptions`, `colorFamilyOptions`, `fitFrustrationOptions`), `frontend/src/app/onboarding/page.tsx` (`MAJOR_BUYS`, `SEASONAL`, `COLOR_FAMILIES`, `FIT_FRUSTRATIONS` constants). Display labels kept human-readable; only the `value` sent over the wire changed.
+
+### 7. New DB-backed `GET /api/images` (replaces GCS-list for the onboarding poll)
 
 **Problem:** `/api/images` was previously an alias for `userAssetsHandler`, which calls `gcsList` under a `users/{uid}/` prefix and then classifies each object path. That conflated input/tryon/pose listings, required a client-side filter, and was a latency hit every time the onboarding wizard polled.
 
