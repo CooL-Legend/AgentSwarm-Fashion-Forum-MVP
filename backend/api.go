@@ -104,11 +104,12 @@ func clampLimit(limit int) int {
 }
 
 type productRow struct {
-	ID           productID    `json:"id"`
-	ImageURL     string       `json:"image_url"`
-	AllImageURLs imageURLList `json:"all_image_urls"`
-	Title        *string      `json:"title"`
-	CreatedAt    *string      `json:"created_at"`
+	ID             productID    `json:"id"`
+	ImageURL       string       `json:"image_url"`
+	AllImageURLs   imageURLList `json:"all_image_urls"`
+	Title          *string      `json:"title"`
+	GarmentFeature *string      `json:"garment_feature"`
+	CreatedAt      *string      `json:"created_at"`
 }
 
 type productCardItem struct {
@@ -669,13 +670,54 @@ func truncateText(input string, maxLen int) string {
 	return input[:maxLen] + "..."
 }
 
+// fetchProductByID loads a single product row by id. Used by the try-on prompt
+// builder to pull garment_feature text for the Gemini prompt.
+func fetchProductByID(ctx context.Context, cfg AppConfig, id string) (*productRow, error) {
+	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
+		return nil, fmt.Errorf("supabase not configured")
+	}
+	u, err := url.Parse(strings.TrimRight(cfg.SupabaseURL, "/") + "/rest/v1/products")
+	if err != nil {
+		return nil, err
+	}
+	q := u.Query()
+	q.Set("select", "id,image_url,all_image_urls,title,garment_feature,created_at")
+	q.Set("id", "eq."+strings.TrimSpace(id))
+	q.Set("limit", "1")
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("products lookup failed: status=%d body=%s", resp.StatusCode, string(b))
+	}
+	var rows []productRow
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("product %s not found", id)
+	}
+	return &rows[0], nil
+}
+
 type tryOnRequest struct {
 	PersonImage   string `json:"person_image"`
 	ClothImage    string `json:"cloth_image"`
 	ClothImageURL string `json:"cloth_image_url"`
-	// UserID is ignored — the authenticated Clerk sub is authoritative.
-	UserID    string `json:"user_id"`
-	GarmentID string `json:"garment_id"`
+	UserID        string `json:"user_id"` // ignored — CURRENT_USER_ID is authoritative
+	GarmentID     string `json:"garment_id"`
 }
 
 type tryOnResponse struct {
@@ -815,38 +857,57 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
+		// Pull the per-user and per-garment descriptions so we can assemble the Gemini prompt.
+		// Missing/empty values are tolerated — the prompt degrades to the base rules.
+		userDesc := ""
+		if row, err := fetchUserInputImageByID(r.Context(), cfg, inputImageID); err != nil {
+			log.Printf("[api/tryon] user_desc_lookup_failed id=%s err=%v", inputImageID, err)
+		} else if row != nil && row.Description != nil {
+			userDesc = strings.TrimSpace(*row.Description)
+		}
+
+		garmentDesc := ""
+		if product, err := fetchProductByID(r.Context(), cfg, productID); err != nil {
+			log.Printf("[api/tryon] garment_lookup_failed id=%s err=%v", productID, err)
+		} else if product != nil && product.GarmentFeature != nil {
+			garmentDesc = strings.TrimSpace(*product.GarmentFeature)
+		}
+
+		prompt := tryonBasePrompt +
+			"\n\nPerson Description:\n" + userDesc +
+			"\n\nGarment Description:\n" + garmentDesc
+
+		model := strings.TrimSpace(cfg.GeminiModel)
+		if model == "" {
+			model = "gemini-3.1-flash-image-preview"
+		}
 		endpoint := fmt.Sprintf(
-			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict",
+			"https://aiplatform.googleapis.com/v1/projects/%s/locations/global/publishers/google/models/%s:generateContent",
 			cfg.GoogleProjectID,
+			model,
 		)
 
+		// Garment first, then person — matches the BASE_PROMPT directive.
 		payload := map[string]any{
-			"instances": []any{
+			"contents": []any{
 				map[string]any{
-					"personImage": map[string]any{
-						"image": map[string]any{
-							"bytesBase64Encoded": personBase64,
-						},
-					},
-					"productImages": []any{
-						map[string]any{
-							"image": map[string]any{
-								"bytesBase64Encoded": clothClean,
-							},
-						},
+					"role": "user",
+					"parts": []any{
+						map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": clothClean}},
+						map[string]any{"inlineData": map[string]any{"mimeType": "image/png", "data": personBase64}},
+						map[string]any{"text": prompt},
 					},
 				},
 			},
-			"parameters": map[string]any{
-				"sampleCount":      1,
-				"personGeneration": "allow_adult",
+			"generationConfig": map[string]any{
+				"responseModalities": []string{"IMAGE", "TEXT"},
 			},
 		}
 
 		requestBody, err := json.Marshal(payload)
 		if err != nil {
 			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "marshal: "+err.Error(), startedAt)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build VTO request"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build try-on request"})
 			return
 		}
 
@@ -856,7 +917,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(requestBody)))
 		if err != nil {
 			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "build request: "+err.Error(), startedAt)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build VTO request"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build try-on request"})
 			return
 		}
 		req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -873,41 +934,30 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-			_ = markTryonFailed(context.Background(), cfg, genRow.ID, fmt.Sprintf("vton %d: %s", resp.StatusCode, string(body)), startedAt)
-			writeJSON(w, resp.StatusCode, map[string]string{"error": "VTON API error: " + string(body)})
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, fmt.Sprintf("gemini %d: %s", resp.StatusCode, string(body)), startedAt)
+			writeJSON(w, resp.StatusCode, map[string]string{"error": "Gemini API error: " + string(body)})
 			return
 		}
 
 		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "decode: "+err.Error(), startedAt)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Invalid response from VTON API"})
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Invalid response from Gemini API"})
 			return
 		}
 
-		predictions, _ := result["predictions"].([]any)
-		if len(predictions) == 0 {
-			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "no predictions returned", startedAt)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "No result generated"})
+		outMime, outputImage := extractInlineGeneratedImage(result)
+		if strings.TrimSpace(outputImage) == "" {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "no image in gemini response", startedAt)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "No image generated by model"})
 			return
 		}
-
-		firstPrediction := predictions[0]
-		outputImage := extractPredictionImage(firstPrediction)
-		if outputImage == "" {
-			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "prediction missing image bytes", startedAt)
-			writeJSON(w, http.StatusOK, tryOnResponse{
-				Success:      true,
-				Image:        nil,
-				Raw:          firstPrediction,
-				GenerationID: genRow.ID,
-			})
-			return
+		if strings.TrimSpace(outMime) == "" {
+			outMime = "image/png"
 		}
 
-		// Upload the result to GCS under the new generations/tryon layout.
 		outputPath := fmt.Sprintf("users/%s/generations/tryon/%s.png", clerkID, genRow.ID)
-		if err := gcsUploadBase64(r.Context(), cfg, outputPath, "image/png", outputImage); err != nil {
+		if err := gcsUploadBase64(r.Context(), cfg, outputPath, outMime, outputImage); err != nil {
 			log.Printf("[api/tryon] output_upload_failed gen=%s err=%v", genRow.ID, err)
 			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "gcs upload: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to persist result image"})
@@ -924,7 +974,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 
 		writeJSON(w, http.StatusOK, tryOnResponse{
 			Success:      true,
-			Image:        "data:image/png;base64," + outputImage,
+			Image:        fmt.Sprintf("data:%s;base64,%s", outMime, outputImage),
 			GenerationID: genRow.ID,
 			OutputGSURI:  outputGSURI,
 			SignedURL:    signedURL,

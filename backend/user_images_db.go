@@ -173,6 +173,54 @@ func countUserInputImages(ctx context.Context, cfg AppConfig, userID string) (in
 	return total, nil
 }
 
+// fetchUserInputImageByID loads a single user_input_images row by id.
+// Used by the try-on handler to pull the enrichment description for the prompt.
+func fetchUserInputImageByID(ctx context.Context, cfg AppConfig, id string) (*userInputImageRow, error) {
+	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
+		return nil, fmt.Errorf("supabase not configured")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+
+	endpoint, err := url.Parse(userInputImagesEndpoint(cfg))
+	if err != nil {
+		return nil, err
+	}
+	q := endpoint.Query()
+	q.Set("select", "*")
+	q.Set("id", "eq."+strings.TrimSpace(id))
+	q.Set("limit", "1")
+	endpoint.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("user-input-images fetch failed: status=%d body=%s", resp.StatusCode, string(b))
+	}
+
+	var rows []userInputImageRow
+	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	return &rows[0], nil
+}
+
 // listUserInputImages returns every row for a user, newest first.
 // Used by the DB-backed /api/images handler to mint fresh signed URLs on read.
 func listUserInputImages(ctx context.Context, cfg AppConfig, userID string) ([]userInputImageRow, error) {
