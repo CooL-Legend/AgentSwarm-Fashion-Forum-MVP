@@ -93,7 +93,7 @@ export default function ProfileView() {
                         first_name: clerkUser?.firstName ?? "",
                         last_name: clerkUser?.lastName ?? "",
                         username: clerkUser?.username ?? clerkUser?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email_id: clerkUser?.primaryEmailAddress?.emailAddress ?? "",
+                        email: clerkUser?.primaryEmailAddress?.emailAddress ?? "",
                     }),
                 });
                 if (!bootstrapResp.ok) {
@@ -121,8 +121,7 @@ export default function ProfileView() {
                 const data = await response.json();
                 const appUser = data?.user;
                 const isComplete = appUser?.onboarding_completed === true;
-                const isSkipped = appUser?.onboarding_skipped === true;
-                if (!isComplete && !isSkipped) {
+                if (!isComplete) {
                     router.replace("/onboarding");
                     return;
                 }

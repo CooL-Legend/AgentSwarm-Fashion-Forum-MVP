@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,12 +20,59 @@ import (
 	"time"
 )
 
-const gcsBucket = "agent_swarm"
+const gcsBucket = "refleckt-media"
 
 // gcsPublicURL returns the canonical https URL for an object (regardless of bucket ACL).
-// Useful as a stable string reference to persist in the database.
+// Kept for legacy call sites. New code should store gs:// URIs and mint signed URLs on read.
 func gcsPublicURL(objectPath string) string {
 	return "https://storage.googleapis.com/" + gcsBucket + "/" + objectPath
+}
+
+// gcsGSURI returns the stable gs:// URI used as the DB-persisted pointer to an object.
+// This is the canonical format for the user_input_images.gcs_url column.
+func gcsGSURI(objectPath string) string {
+	return "gs://" + gcsBucket + "/" + objectPath
+}
+
+// parseGCSURL splits a stored GCS reference into (bucket, objectPath).
+// Accepts gs://bucket/path, https://storage.googleapis.com/bucket/path, and bare
+// "bucket/path" forms so existing rows written before the gs:// switch still resolve.
+func parseGCSURL(raw string) (string, string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", "", errors.New("empty gcs url")
+	}
+	if strings.HasPrefix(s, "gs://") {
+		rest := strings.TrimPrefix(s, "gs://")
+		slash := strings.Index(rest, "/")
+		if slash <= 0 {
+			return "", "", fmt.Errorf("malformed gs uri: %s", raw)
+		}
+		return rest[:slash], rest[slash+1:], nil
+	}
+	for _, prefix := range []string{"https://storage.googleapis.com/", "http://storage.googleapis.com/"} {
+		if strings.HasPrefix(s, prefix) {
+			rest := strings.TrimPrefix(s, prefix)
+			slash := strings.Index(rest, "/")
+			if slash <= 0 {
+				return "", "", fmt.Errorf("malformed https gcs url: %s", raw)
+			}
+			return rest[:slash], rest[slash+1:], nil
+		}
+	}
+	return "", "", fmt.Errorf("unrecognised gcs url: %s", raw)
+}
+
+// newUUIDv4 returns a RFC 4122 v4 UUID string. Used to name input images so that
+// the DB row id and the GCS object filename match 1:1.
+func newUUIDv4() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
 // gcsUpload writes raw bytes to gs://agent_swarm/{objectPath} using the service account OAuth token.

@@ -104,7 +104,7 @@ export default function GalleryView() {
                         first_name: user?.firstName ?? "",
                         last_name: user?.lastName ?? "",
                         username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email_id: user?.primaryEmailAddress?.emailAddress ?? "",
+                        email: user?.primaryEmailAddress?.emailAddress ?? "",
                     }),
                 });
                 if (!bootstrapResp.ok) {
@@ -132,14 +132,13 @@ export default function GalleryView() {
                 const appUser = payload?.user ?? payload;
 
                 const isComplete = appUser?.onboarding_completed === true;
-                const isSkipped = appUser?.onboarding_skipped === true;
-                if (!isComplete && !isSkipped) {
+                if (!isComplete) {
                     router.replace("/onboarding");
                     return;
                 }
 
-                const raw = appUser?.sex;
-                const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+                const raw = appUser?.gender_identity;
+                const gender = typeof raw === "string" ? raw.trim().toLowerCase() : null;
                 const genderMap: Record<string, string> = {
                     male: "men",
                     female: "women",
@@ -147,8 +146,8 @@ export default function GalleryView() {
                     prefer_not_to_say: "",
                 };
                 if (!cancelled) {
-                    setUserGender(sex ? (genderMap[sex] ?? sex) : null);
-                    if (appUser?.user_id) setUserId(appUser.user_id);
+                    setUserGender(gender ? (genderMap[gender] ?? gender) : null);
+                    if (appUser?.id) setUserId(appUser.id);
                 }
             } catch (error) {
                 if (!cancelled) {

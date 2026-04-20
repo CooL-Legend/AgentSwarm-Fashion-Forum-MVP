@@ -75,11 +75,11 @@ export default function InformationGrid({ user }: { user: UserProfile }) {
                     Contact &amp; Details
                 </h2>
                 <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 md:grid-cols-3">
-                    <DetailField label="Email" value={user.email_id} icon={<MailIcon />} />
+                    <DetailField label="Email" value={user.email} icon={<MailIcon />} />
                     <DetailField label="Location" value={user.location} icon={<MapPinIcon />} />
                     <DetailField label="Phone" value={user.phone_number} icon={<PhoneIcon />} />
-                    <DetailField label="Gender" value={user.sex} icon={<UserIcon />} />
-                    <DetailField label="Height" value={user.height} icon={<RulerIcon />} />
+                    <DetailField label="Gender" value={user.gender_identity} icon={<UserIcon />} />
+                    <DetailField label="Height" value={user.height_cm ? `${user.height_cm} cm` : null} icon={<RulerIcon />} />
                 </div>
             </div>
 

@@ -1,10 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth, useUser } from "@clerk/nextjs";
 import { useRouter } from "next/navigation";
 import { backendApiUrl } from "@/lib/backend-api";
-import type { OnboardingAnswers } from "@/lib/user-types";
+import type {
+    OnboardingOptionalFields,
+    OnboardingRequiredFields,
+    UserProfile,
+} from "@/lib/user-types";
 
 const VISUAL_LANGUAGE = [
     { value: "minimalist_monochromatic", label: "Minimalist & Monochromatic" },
@@ -72,13 +76,29 @@ const FIT_FRUSTRATIONS = [
     { value: "petite_tall_sleeve", label: "Petite / Tall Sleeve" },
 ];
 
-const INITIAL_FORM: OnboardingAnswers = {
+type Phase = 1 | 2 | 3;
+
+const MAX_IMAGES = 5;
+
+type ImageAsset = {
+    id: string;
+    signed_url: string;
+    object_path: string;
+    status: "uploading" | "pending" | "completed" | "failed";
+};
+
+type RequiredForm = OnboardingRequiredFields & { first_name: string; last_name: string };
+
+const INITIAL_REQUIRED: RequiredForm = {
+    username: "",
+    date_of_birth: "",
+    gender_identity: "",
+    visual_language: "",
     first_name: "",
     last_name: "",
-    username: "",
-    age: null,
-    sex: "",
-    visual_language: "",
+};
+
+const INITIAL_OPTIONAL: OnboardingOptionalFields = {
     occupation: "",
     height_cm: null,
     shoulder_width_cm: null,
@@ -96,17 +116,65 @@ const INITIAL_FORM: OnboardingAnswers = {
     fit_frustrations: [],
 };
 
+async function fileToBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result ?? ""));
+        reader.onerror = () => reject(reader.error ?? new Error("file read failed"));
+        reader.readAsDataURL(file);
+    });
+}
+
 export default function OnboardingPage() {
     const router = useRouter();
     const { isLoaded, isSignedIn, getToken } = useAuth();
     const { user } = useUser();
 
-    const [step, setStep] = useState(1);
-    const [form, setForm] = useState<OnboardingAnswers>(INITIAL_FORM);
+    const [phase, setPhase] = useState<Phase>(1);
+    const [required, setRequired] = useState<RequiredForm>(INITIAL_REQUIRED);
+    const [optional, setOptional] = useState<OnboardingOptionalFields>(INITIAL_OPTIONAL);
+    const [images, setImages] = useState<ImageAsset[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+    const authFetch = useCallback(
+        async (path: string, init?: RequestInit) => {
+            const token = await getToken();
+            return fetch(backendApiUrl(path), {
+                ...init,
+                headers: {
+                    ...(init?.headers ?? {}),
+                    Authorization: `Bearer ${token ?? ""}`,
+                },
+            });
+        },
+        [getToken],
+    );
+
+    const loadImages = useCallback(async () => {
+        const res = await authFetch("/api/images");
+        if (!res.ok) return [] as ImageAsset[];
+        const data = (await res.json()) as { assets?: Array<{ object_path: string; signed_url: string }> };
+        const assets = (data.assets ?? [])
+            .filter((a) => a.object_path.includes("/input/") || a.object_path.includes("/inputs/"))
+            .map<ImageAsset>((a) => ({
+                id: a.object_path,
+                signed_url: a.signed_url,
+                object_path: a.object_path,
+                status: "completed",
+            }));
+        setImages((prev) => {
+            // Preserve in-flight uploads that haven't landed in the list yet.
+            const serverIds = new Set(assets.map((a) => a.object_path));
+            const inFlight = prev.filter((a) => a.status === "uploading" && !serverIds.has(a.object_path));
+            return [...assets, ...inFlight];
+        });
+        return assets;
+    }, [authFetch]);
+
+    // Resolve starting phase from server state on mount.
     useEffect(() => {
         if (!isLoaded) return;
         if (!isSignedIn) {
@@ -114,452 +182,518 @@ export default function OnboardingPage() {
             return;
         }
 
-        const bootstrap = async () => {
+        (async () => {
             setLoading(true);
-            setError(null);
             try {
-                const token = await getToken();
-                if (!token) throw new Error("No auth token found");
-
-                const bootstrapResponse = await fetch(backendApiUrl("/api/users/bootstrap"), {
+                // Bootstrap (idempotent) to make sure the row exists.
+                await authFetch("/api/users/bootstrap", {
                     method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
-                    },
+                    headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
-                        first_name: user?.firstName ?? "",
-                        last_name: user?.lastName ?? "",
-                        username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email_id: user?.primaryEmailAddress?.emailAddress ?? "",
+                        first_name: user?.firstName ?? null,
+                        last_name: user?.lastName ?? null,
+                        username: user?.username ?? null,
+                        email: user?.primaryEmailAddress?.emailAddress ?? null,
                     }),
                 });
 
-                const bootstrapPayload = await bootstrapResponse.json().catch(() => null);
-                if (!bootstrapResponse.ok) {
-                    if (bootstrapPayload?.code === "provision_failed") {
-                        router.replace("/sign-up");
-                        return;
-                    }
-                    throw new Error(bootstrapPayload?.error || "Failed to initialize user profile");
-                }
+                const res = await authFetch("/api/users");
+                if (!res.ok) throw new Error("failed to load profile");
+                const body = (await res.json()) as { user: UserProfile };
+                const profile = body.user;
 
-                const appUser = bootstrapPayload?.user;
-                const isComplete = appUser?.onboarding_completed === true;
-                const isSkipped = appUser?.onboarding_skipped === true;
-                if (isComplete || isSkipped) {
+                if (profile.onboarding_completed) {
                     router.replace("/gallery");
                     return;
                 }
 
-                setForm((prev) => ({
-                    ...prev,
-                    first_name: appUser?.first_name ?? prev.first_name,
-                    last_name: appUser?.last_name ?? prev.last_name,
-                    username: appUser?.username ?? prev.username,
-                    age: appUser?.age ?? prev.age,
-                    sex: appUser?.sex ?? prev.sex,
-                    visual_language: appUser?.visual_language ?? prev.visual_language,
-                    occupation: appUser?.occupation ?? prev.occupation,
-                    height_cm: appUser?.height_cm ?? prev.height_cm,
-                    shoulder_width_cm: appUser?.shoulder_width_cm ?? prev.shoulder_width_cm,
-                    chest_bust_cm: appUser?.chest_bust_cm ?? prev.chest_bust_cm,
-                    arm_length_cm: appUser?.arm_length_cm ?? prev.arm_length_cm,
-                    waist_cm: appUser?.waist_cm ?? prev.waist_cm,
-                    thigh_cm: appUser?.thigh_cm ?? prev.thigh_cm,
-                    inseam_cm: appUser?.inseam_cm ?? prev.inseam_cm,
-                    major_buys: Array.isArray(appUser?.major_buys) ? appUser.major_buys : prev.major_buys,
-                    seasonal_preferences: Array.isArray(appUser?.seasonal_preferences)
-                        ? appUser.seasonal_preferences
-                        : prev.seasonal_preferences,
-                    tshirt_fit: appUser?.tshirt_fit ?? prev.tshirt_fit,
-                    jeans_fit: appUser?.jeans_fit ?? prev.jeans_fit,
-                    color_families: Array.isArray(appUser?.color_families) ? appUser.color_families : prev.color_families,
-                    activity_profiles: Array.isArray(appUser?.activity_profiles) ? appUser.activity_profiles : prev.activity_profiles,
-                    fit_frustrations: Array.isArray(appUser?.fit_frustrations) ? appUser.fit_frustrations : prev.fit_frustrations,
-                }));
-            } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to load onboarding");
+                setRequired({
+                    username: profile.username ?? "",
+                    date_of_birth: profile.date_of_birth ?? "",
+                    gender_identity: profile.gender_identity ?? "",
+                    visual_language: profile.visual_language ?? "",
+                    first_name: profile.first_name ?? user?.firstName ?? "",
+                    last_name: profile.last_name ?? user?.lastName ?? "",
+                });
+                setOptional({
+                    occupation: profile.occupation ?? "",
+                    height_cm: profile.height_cm,
+                    shoulder_width_cm: profile.shoulder_width_cm,
+                    chest_bust_cm: profile.chest_bust_cm,
+                    arm_length_cm: profile.arm_length_cm,
+                    waist_cm: profile.waist_cm,
+                    thigh_cm: profile.thigh_cm,
+                    inseam_cm: profile.inseam_cm,
+                    major_buys: profile.major_buys ?? [],
+                    seasonal_preferences: profile.seasonal_preferences ?? [],
+                    tshirt_fit: profile.tshirt_fit ?? "",
+                    jeans_fit: profile.jeans_fit ?? "",
+                    color_families: profile.color_families ?? [],
+                    activity_profiles: profile.activity_profiles ?? [],
+                    fit_frustrations: profile.fit_frustrations ?? [],
+                });
+
+                const requiredDone =
+                    !!profile.username &&
+                    !!profile.date_of_birth &&
+                    !!profile.gender_identity &&
+                    !!profile.visual_language;
+
+                if (!requiredDone) {
+                    setPhase(1);
+                } else {
+                    const assets = await loadImages();
+                    setPhase(assets.length >= 1 ? 3 : 2);
+                }
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "Failed to load onboarding state");
             } finally {
                 setLoading(false);
             }
+        })();
+    }, [isLoaded, isSignedIn, user, router, authFetch, loadImages]);
+
+    // Poll /api/images while any upload is in-flight.
+    useEffect(() => {
+        const pending = images.some((i) => i.status === "uploading" || i.status === "pending");
+        if (phase === 2 && pending) {
+            pollRef.current = setInterval(() => {
+                loadImages().catch(() => null);
+            }, 3000);
+        }
+        return () => {
+            if (pollRef.current) {
+                clearInterval(pollRef.current);
+                pollRef.current = null;
+            }
         };
+    }, [phase, images, loadImages]);
 
-        bootstrap();
-    }, [getToken, isLoaded, isSignedIn, router, user]);
-
-    const progress = useMemo(() => Math.round((step / 4) * 100), [step]);
-
-    const updateField = <K extends keyof OnboardingAnswers>(key: K, value: OnboardingAnswers[K]) => {
-        setForm((prev) => ({ ...prev, [key]: value }));
-    };
-
-    const toggleListValue = (key: keyof OnboardingAnswers, value: string) => {
-        setForm((prev) => {
-            const list = Array.isArray(prev[key]) ? (prev[key] as string[]) : [];
-            return {
-                ...prev,
-                [key]: list.includes(value) ? list.filter((item) => item !== value) : [...list, value],
-            };
-        });
-    };
-
-    const parseNumberInput = (raw: string): number | null => {
-        const trimmed = raw.trim();
-        if (!trimmed) return null;
-        const value = Number(trimmed);
-        return Number.isFinite(value) ? value : null;
-    };
-
-    const hasRequiredBasics = useMemo(() => {
-        const hasFirstName = form.first_name.trim().length > 0;
-        const hasLastName = form.last_name.trim().length > 0;
-        const hasUsername = form.username.trim().length > 0;
-        const hasValidAge = typeof form.age === "number" && Number.isFinite(form.age) && form.age >= 10 && form.age <= 120;
-        return hasFirstName && hasLastName && hasUsername && hasValidAge;
-    }, [form.age, form.first_name, form.last_name, form.username]);
-
-    const requiredBasicsError = "First name, last name, username, and age (10-120) are required.";
-
-    const goToNextStep = () => {
-        if (step === 1 && !hasRequiredBasics) {
-            setError(requiredBasicsError);
-            return;
-        }
-        setError(null);
-        setStep((prev) => Math.min(4, prev + 1));
-    };
-
-    const submit = async (skip: boolean) => {
-        if (!skip && !hasRequiredBasics) {
-            setError(requiredBasicsError);
-            setStep(1);
-            return;
-        }
-
+    const submitRequired = async () => {
         setSaving(true);
         setError(null);
-
         try {
-            const token = await getToken();
-            if (!token) throw new Error("No auth token found");
-
-            const payload = skip
-                ? { skip: true }
-                : {
-                      skip: false,
-                      ...form,
-                  };
-
-            const response = await fetch(backendApiUrl("/api/users/onboarding"), {
+            const res = await authFetch("/api/users/onboarding", {
                 method: "PATCH",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${token}`,
-                },
-                body: JSON.stringify(payload),
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ phase: "required", ...required }),
             });
-
-            const data = await response.json().catch(() => null);
-            if (!response.ok) {
-                throw new Error(data?.error || "Failed to save onboarding");
+            if (!res.ok) {
+                const j = await res.json().catch(() => ({ error: "failed" }));
+                throw new Error(j.error ?? "failed");
             }
-
-            router.push("/gallery");
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to save onboarding");
+            setPhase(2);
+            await loadImages();
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to save");
         } finally {
             setSaving(false);
         }
     };
 
+    const onFiles = async (files: FileList | null) => {
+        if (!files) return;
+        setError(null);
+        const slots = MAX_IMAGES - images.length;
+        const toUpload = Array.from(files).slice(0, slots);
+        for (const file of toUpload) {
+            if (file.size > 5 * 1024 * 1024) {
+                setError(`${file.name} exceeds the 5MB limit`);
+                continue;
+            }
+            const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            setImages((prev) => [
+                ...prev,
+                { id: tempId, signed_url: "", object_path: tempId, status: "uploading" },
+            ]);
+            try {
+                const b64 = await fileToBase64(file);
+                const res = await authFetch("/api/images/upload", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ kind: "input", image: b64 }),
+                });
+                if (!res.ok) {
+                    const j = await res.json().catch(() => ({ error: "upload failed" }));
+                    throw new Error(j.error ?? "upload failed");
+                }
+                await loadImages();
+            } catch (e) {
+                setError(e instanceof Error ? e.message : "Upload failed");
+                setImages((prev) => prev.filter((i) => i.id !== tempId));
+            }
+        }
+    };
+
+    const advanceFromImages = async () => {
+        setSaving(true);
+        setError(null);
+        try {
+            const res = await authFetch("/api/users/onboarding", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ phase: "images_done" }),
+            });
+            if (!res.ok) {
+                const j = await res.json().catch(() => ({ error: "failed" }));
+                throw new Error(j.error ?? "failed");
+            }
+            setPhase(3);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to advance");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const submitOptional = async (skip: boolean) => {
+        setSaving(true);
+        setError(null);
+        try {
+            const body = skip
+                ? { phase: "optional_skip" }
+                : { phase: "optional_save", ...optional };
+            const res = await authFetch("/api/users/onboarding", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            if (!res.ok) {
+                const j = await res.json().catch(() => ({ error: "failed" }));
+                throw new Error(j.error ?? "failed");
+            }
+            router.replace("/gallery");
+        } catch (e) {
+            setError(e instanceof Error ? e.message : "Failed to save");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const toggleArray = (field: keyof OnboardingOptionalFields, value: string) => {
+        setOptional((prev) => {
+            const current = (prev[field] as string[] | undefined) ?? [];
+            const next = current.includes(value) ? current.filter((v) => v !== value) : [...current, value];
+            return { ...prev, [field]: next };
+        });
+    };
+
     if (loading) {
         return (
-            <main className="mx-auto max-w-5xl px-4 py-12">
-                <div className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-8 text-sm text-zinc-400">
-                    Preparing your onboarding experience...
-                </div>
+            <main className="min-h-screen bg-neutral-50 flex items-center justify-center">
+                <p className="text-neutral-600">Loading…</p>
             </main>
         );
     }
 
     return (
-        <main className="mx-auto max-w-5xl px-4 py-10">
-            <div className="mb-6 rounded-3xl border border-zinc-800 bg-zinc-900/60 p-6">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-300/80">Onboarding</p>
-                <h1 className="mt-2 text-3xl font-semibold text-zinc-100">Set your fashion preferences</h1>
-                <p className="mt-2 text-sm text-zinc-400">
-                    We use these answers to personalize your marketplace, try-on flow, and pose-transfer experience.
-                </p>
-                <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-zinc-800">
-                    <div className="h-full bg-gradient-to-r from-amber-400 to-orange-400 transition-all" style={{ width: `${progress}%` }} />
-                </div>
+        <main className="min-h-screen bg-neutral-50 py-10 px-4">
+            <div className="max-w-2xl mx-auto">
+                <header className="mb-6">
+                    <p className="text-xs uppercase tracking-wider text-neutral-500">Phase {phase} of 3</p>
+                    <h1 className="text-2xl font-semibold mt-1">
+                        {phase === 1 && "Tell us about you"}
+                        {phase === 2 && "Upload 1–5 reference photos"}
+                        {phase === 3 && "Style preferences (optional)"}
+                    </h1>
+                </header>
+
+                {error && (
+                    <div className="mb-4 p-3 rounded bg-red-50 border border-red-200 text-sm text-red-700">
+                        {error}
+                    </div>
+                )}
+
+                {phase === 1 && (
+                    <section className="space-y-4 bg-white p-6 rounded-lg border border-neutral-200">
+                        <Field label="Username">
+                            <input
+                                className="input"
+                                value={required.username}
+                                onChange={(e) => setRequired({ ...required, username: e.target.value })}
+                            />
+                        </Field>
+                        <Field label="Date of birth">
+                            <input
+                                type="date"
+                                className="input"
+                                value={required.date_of_birth}
+                                onChange={(e) => setRequired({ ...required, date_of_birth: e.target.value })}
+                            />
+                        </Field>
+                        <Field label="Gender identity">
+                            <RadioGroup
+                                name="gender_identity"
+                                options={IDENTITIES}
+                                value={required.gender_identity}
+                                onChange={(v) => setRequired({ ...required, gender_identity: v })}
+                            />
+                        </Field>
+                        <Field label="Visual language">
+                            <RadioGroup
+                                name="visual_language"
+                                options={VISUAL_LANGUAGE}
+                                value={required.visual_language}
+                                onChange={(v) => setRequired({ ...required, visual_language: v })}
+                            />
+                        </Field>
+                        <div className="pt-2 flex justify-end">
+                            <button
+                                className="btn-primary"
+                                onClick={submitRequired}
+                                disabled={
+                                    saving ||
+                                    !required.username ||
+                                    !required.date_of_birth ||
+                                    !required.gender_identity ||
+                                    !required.visual_language
+                                }
+                            >
+                                Continue
+                            </button>
+                        </div>
+                    </section>
+                )}
+
+                {phase === 2 && (
+                    <section className="space-y-4 bg-white p-6 rounded-lg border border-neutral-200">
+                        <p className="text-sm text-neutral-600">
+                            Upload 1 to {MAX_IMAGES} reference photos. These help us match the right looks for you.
+                        </p>
+                        <label className="block">
+                            <span className="sr-only">Upload</span>
+                            <input
+                                type="file"
+                                accept="image/jpeg,image/png,image/webp"
+                                multiple
+                                disabled={images.length >= MAX_IMAGES}
+                                onChange={(e) => onFiles(e.target.files)}
+                                className="block w-full text-sm text-neutral-700 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-neutral-900 file:text-white hover:file:bg-neutral-700"
+                            />
+                        </label>
+
+                        <ul className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-4">
+                            {images.map((img) => (
+                                <li key={img.id} className="aspect-square rounded-md border border-neutral-200 overflow-hidden bg-neutral-100 relative">
+                                    {img.signed_url ? (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img src={img.signed_url} alt="upload" className="w-full h-full object-cover" />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center text-xs text-neutral-500">
+                                            Uploading…
+                                        </div>
+                                    )}
+                                    <span className="absolute bottom-1 left-1 text-[10px] px-1.5 py-0.5 rounded bg-white/80 border border-neutral-200">
+                                        {img.status}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+
+                        <div className="pt-2 flex justify-between items-center">
+                            <p className="text-xs text-neutral-500">{images.length} / {MAX_IMAGES}</p>
+                            <button
+                                className="btn-primary"
+                                onClick={advanceFromImages}
+                                disabled={saving || images.length < 1}
+                            >
+                                Continue
+                            </button>
+                        </div>
+                    </section>
+                )}
+
+                {phase === 3 && (
+                    <section className="space-y-5 bg-white p-6 rounded-lg border border-neutral-200">
+                        <Field label="Occupation">
+                            <input
+                                className="input"
+                                value={optional.occupation ?? ""}
+                                onChange={(e) => setOptional({ ...optional, occupation: e.target.value })}
+                            />
+                        </Field>
+                        <div className="grid grid-cols-2 gap-3">
+                            {(["height_cm", "shoulder_width_cm", "chest_bust_cm", "arm_length_cm", "waist_cm", "thigh_cm", "inseam_cm"] as const).map((k) => (
+                                <Field key={k} label={k.replace(/_/g, " ")}>
+                                    <input
+                                        type="number"
+                                        className="input"
+                                        value={optional[k] ?? ""}
+                                        onChange={(e) =>
+                                            setOptional({
+                                                ...optional,
+                                                [k]: e.target.value === "" ? null : Number(e.target.value),
+                                            })
+                                        }
+                                    />
+                                </Field>
+                            ))}
+                        </div>
+                        <Field label="T-shirt fit">
+                            <RadioGroup
+                                name="tshirt_fit"
+                                options={TSHIRT_FIT}
+                                value={optional.tshirt_fit ?? ""}
+                                onChange={(v) => setOptional({ ...optional, tshirt_fit: v })}
+                            />
+                        </Field>
+                        <Field label="Jeans fit">
+                            <RadioGroup
+                                name="jeans_fit"
+                                options={JEANS_FIT}
+                                value={optional.jeans_fit ?? ""}
+                                onChange={(v) => setOptional({ ...optional, jeans_fit: v })}
+                            />
+                        </Field>
+                        <CheckboxGroup
+                            label="Major buys"
+                            options={MAJOR_BUYS}
+                            values={optional.major_buys ?? []}
+                            onToggle={(v) => toggleArray("major_buys", v)}
+                        />
+                        <CheckboxGroup
+                            label="Seasonal preferences"
+                            options={SEASONAL}
+                            values={optional.seasonal_preferences ?? []}
+                            onToggle={(v) => toggleArray("seasonal_preferences", v)}
+                        />
+                        <CheckboxGroup
+                            label="Color families"
+                            options={COLOR_FAMILIES}
+                            values={optional.color_families ?? []}
+                            onToggle={(v) => toggleArray("color_families", v)}
+                        />
+                        <CheckboxGroup
+                            label="Activity profiles"
+                            options={ACTIVITIES}
+                            values={optional.activity_profiles ?? []}
+                            onToggle={(v) => toggleArray("activity_profiles", v)}
+                        />
+                        <CheckboxGroup
+                            label="Fit frustrations"
+                            options={FIT_FRUSTRATIONS}
+                            values={optional.fit_frustrations ?? []}
+                            onToggle={(v) => toggleArray("fit_frustrations", v)}
+                        />
+
+                        <div className="pt-2 flex justify-between items-center">
+                            <button
+                                className="text-sm text-neutral-500 hover:text-neutral-800"
+                                onClick={() => submitOptional(true)}
+                                disabled={saving}
+                            >
+                                Skip for now
+                            </button>
+                            <button
+                                className="btn-primary"
+                                onClick={() => submitOptional(false)}
+                                disabled={saving}
+                            >
+                                Save Preferences
+                            </button>
+                        </div>
+                    </section>
+                )}
             </div>
 
-            {error && (
-                <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                    {error}
-                </div>
-            )}
-
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900/60 p-6">
-                {step === 1 && (
-                    <div className="space-y-6">
-                        <h2 className="text-xl font-semibold text-zinc-100">Step 1: Basics + visual identity</h2>
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <Input label="First name" required value={form.first_name} onChange={(v) => updateField("first_name", v)} />
-                            <Input label="Last name" required value={form.last_name} onChange={(v) => updateField("last_name", v)} />
-                            <Input label="Username" required value={form.username} onChange={(v) => updateField("username", v)} />
-                            <Input
-                                label="Age"
-                                type="number"
-                                required
-                                min={10}
-                                max={120}
-                                value={form.age == null ? "" : String(form.age)}
-                                onChange={(v) => updateField("age", parseNumberInput(v))}
-                            />
-                        </div>
-                        <RadioGroup
-                            title="How would you describe your visual language?"
-                            value={form.visual_language}
-                            options={VISUAL_LANGUAGE}
-                            onChange={(value) => updateField("visual_language", value)}
-                        />
-                        <RadioGroup
-                            title="How do you identify?"
-                            value={form.sex}
-                            options={IDENTITIES}
-                            onChange={(value) => updateField("sex", value)}
-                        />
-                    </div>
-                )}
-
-                {step === 2 && (
-                    <div className="space-y-6">
-                        <h2 className="text-xl font-semibold text-zinc-100">Step 2: Occupation + measurements</h2>
-                        <Input label="Occupation" value={form.occupation} onChange={(v) => updateField("occupation", v)} />
-                        <div className="grid gap-4 sm:grid-cols-2">
-                            <Input type="number" label="Height (cm)" value={valueOf(form.height_cm)} onChange={(v) => updateField("height_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Shoulder width (cm)" value={valueOf(form.shoulder_width_cm)} onChange={(v) => updateField("shoulder_width_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Chest/Bust (cm)" value={valueOf(form.chest_bust_cm)} onChange={(v) => updateField("chest_bust_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Arm length (cm)" value={valueOf(form.arm_length_cm)} onChange={(v) => updateField("arm_length_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Waist (cm)" value={valueOf(form.waist_cm)} onChange={(v) => updateField("waist_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Thigh (cm)" value={valueOf(form.thigh_cm)} onChange={(v) => updateField("thigh_cm", parseNumberInput(v))} />
-                            <Input type="number" label="Inseam (cm)" value={valueOf(form.inseam_cm)} onChange={(v) => updateField("inseam_cm", parseNumberInput(v))} />
-                        </div>
-                    </div>
-                )}
-
-                {step === 3 && (
-                    <div className="space-y-6">
-                        <h2 className="text-xl font-semibold text-zinc-100">Step 3: Style preferences</h2>
-                        <CheckboxGroup
-                            title="What are your major buys?"
-                            selected={form.major_buys}
-                            options={MAJOR_BUYS}
-                            onToggle={(value) => toggleListValue("major_buys", value)}
-                        />
-                        <CheckboxGroup
-                            title="Seasonal preferences"
-                            selected={form.seasonal_preferences}
-                            options={SEASONAL}
-                            onToggle={(value) => toggleListValue("seasonal_preferences", value)}
-                        />
-                        <RadioGroup
-                            title="Go-to T-shirt fit"
-                            value={form.tshirt_fit}
-                            options={TSHIRT_FIT}
-                            onChange={(value) => updateField("tshirt_fit", value)}
-                        />
-                        <RadioGroup
-                            title="Go-to jeans fit"
-                            value={form.jeans_fit}
-                            options={JEANS_FIT}
-                            onChange={(value) => updateField("jeans_fit", value)}
-                        />
-                        <CheckboxGroup
-                            title="Color families"
-                            selected={form.color_families}
-                            options={COLOR_FAMILIES}
-                            onToggle={(value) => toggleListValue("color_families", value)}
-                        />
-                        <CheckboxGroup
-                            title="Activities"
-                            selected={form.activity_profiles}
-                            options={ACTIVITIES}
-                            onToggle={(value) => toggleListValue("activity_profiles", value)}
-                        />
-                    </div>
-                )}
-
-                {step === 4 && (
-                    <div className="space-y-6">
-                        <h2 className="text-xl font-semibold text-zinc-100">Step 4: Fit frustrations + review</h2>
-                        <CheckboxGroup
-                            title="Do you identify with any fit frustrations?"
-                            selected={form.fit_frustrations}
-                            options={FIT_FRUSTRATIONS}
-                            onToggle={(value) => toggleListValue("fit_frustrations", value)}
-                        />
-                        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-4 text-sm text-zinc-300">
-                            <p className="font-semibold text-zinc-100">Review</p>
-                            <p className="mt-1">{form.first_name} {form.last_name} ({form.username})</p>
-                            <p className="mt-1 text-zinc-400">{form.visual_language || "No visual language selected"}</p>
-                        </div>
-                    </div>
-                )}
-
-                <div className="mt-8 flex flex-wrap items-center justify-between gap-3">
-                    <button
-                        type="button"
-                        onClick={() => submit(true)}
-                        disabled={saving}
-                        className="rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-50"
-                    >
-                        Skip for now
-                    </button>
-
-                    <div className="flex items-center gap-2">
-                        {step > 1 && (
-                            <button
-                                type="button"
-                                onClick={() => setStep((prev) => Math.max(1, prev - 1))}
-                                disabled={saving}
-                                className="rounded-full border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm font-semibold text-zinc-200 transition-colors hover:border-zinc-600 hover:bg-zinc-800 disabled:opacity-50"
-                            >
-                                Back
-                            </button>
-                        )}
-                        {step < 4 ? (
-                            <button
-                                type="button"
-                                onClick={goToNextStep}
-                                disabled={saving}
-                                className="rounded-full bg-amber-500 px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-50"
-                            >
-                                Next
-                            </button>
-                        ) : (
-                            <button
-                                type="button"
-                                onClick={() => submit(false)}
-                                disabled={saving}
-                                className="rounded-full bg-amber-500 px-5 py-2 text-sm font-semibold text-black transition-colors hover:bg-amber-400 disabled:opacity-50"
-                            >
-                                {saving ? "Saving..." : "Save preferences"}
-                            </button>
-                        )}
-                    </div>
-                </div>
-            </section>
+            <style jsx>{`
+                .input {
+                    width: 100%;
+                    border: 1px solid rgb(229 229 229);
+                    border-radius: 6px;
+                    padding: 8px 10px;
+                    font-size: 14px;
+                }
+                .input:focus {
+                    outline: none;
+                    border-color: rgb(23 23 23);
+                }
+                .btn-primary {
+                    background: rgb(23 23 23);
+                    color: white;
+                    padding: 8px 16px;
+                    border-radius: 6px;
+                    font-size: 14px;
+                }
+                .btn-primary:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+            `}</style>
         </main>
     );
 }
 
-function valueOf(value: number | null): string {
-    return value == null ? "" : String(value);
-}
-
-function Input({
-    label,
-    value,
-    onChange,
-    type = "text",
-    required = false,
-    min,
-    max,
-}: {
-    label: string;
-    value: string;
-    onChange: (value: string) => void;
-    type?: string;
-    required?: boolean;
-    min?: number;
-    max?: number;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
     return (
-        <label className="block space-y-1 text-sm">
-            <span className="text-zinc-300">{label}</span>
-            <input
-                type={type}
-                required={required}
-                min={min}
-                max={max}
-                value={value}
-                onChange={(event) => onChange(event.target.value)}
-                className="w-full rounded-xl border border-zinc-700 bg-zinc-950 px-3 py-2 text-zinc-100 outline-none transition-colors focus:border-amber-400/70"
-            />
+        <label className="block">
+            <span className="block text-xs uppercase tracking-wider text-neutral-500 mb-1.5">{label}</span>
+            {children}
         </label>
     );
 }
 
 function RadioGroup({
-    title,
-    value,
+    name,
     options,
+    value,
     onChange,
 }: {
-    title: string;
-    value: string;
+    name: string;
     options: Array<{ value: string; label: string }>;
-    onChange: (value: string) => void;
+    value: string;
+    onChange: (v: string) => void;
 }) {
     return (
-        <div>
-            <p className="mb-2 text-sm font-medium text-zinc-200">{title}</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-                {options.map((option) => (
-                    <button
-                        type="button"
-                        key={option.value}
-                        onClick={() => onChange(option.value)}
-                        className={`rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
-                            value === option.value
-                                ? "border-amber-400/70 bg-amber-500/10 text-amber-200"
-                                : "border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-600"
-                        }`}
-                    >
-                        {option.label}
-                    </button>
-                ))}
-            </div>
+        <div className="flex flex-wrap gap-2">
+            {options.map((opt) => (
+                <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => onChange(opt.value)}
+                    className={`px-3 py-1.5 rounded-md border text-sm ${
+                        value === opt.value
+                            ? "bg-neutral-900 text-white border-neutral-900"
+                            : "bg-white text-neutral-700 border-neutral-200 hover:border-neutral-400"
+                    }`}
+                    data-name={name}
+                >
+                    {opt.label}
+                </button>
+            ))}
         </div>
     );
 }
 
 function CheckboxGroup({
-    title,
-    selected,
+    label,
     options,
+    values,
     onToggle,
 }: {
-    title: string;
-    selected: string[];
+    label: string;
     options: Array<{ value: string; label: string }>;
-    onToggle: (value: string) => void;
+    values: string[];
+    onToggle: (v: string) => void;
 }) {
     return (
         <div>
-            <p className="mb-2 text-sm font-medium text-zinc-200">{title}</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-                {options.map((option) => {
-                    const active = selected.includes(option.value);
-                    return (
-                        <button
-                            type="button"
-                            key={option.value}
-                            onClick={() => onToggle(option.value)}
-                            className={`rounded-xl border px-3 py-2 text-left text-sm transition-colors ${
-                                active
-                                    ? "border-amber-400/70 bg-amber-500/10 text-amber-200"
-                                    : "border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-600"
-                            }`}
-                        >
-                            {option.label}
-                        </button>
-                    );
-                })}
+            <p className="block text-xs uppercase tracking-wider text-neutral-500 mb-1.5">{label}</p>
+            <div className="flex flex-wrap gap-2">
+                {options.map((opt) => (
+                    <button
+                        key={opt.value}
+                        type="button"
+                        onClick={() => onToggle(opt.value)}
+                        className={`px-3 py-1.5 rounded-md border text-sm ${
+                            values.includes(opt.value)
+                                ? "bg-neutral-900 text-white border-neutral-900"
+                                : "bg-white text-neutral-700 border-neutral-200 hover:border-neutral-400"
+                        }`}
+                    >
+                        {opt.label}
+                    </button>
+                ))}
             </div>
         </div>
     );

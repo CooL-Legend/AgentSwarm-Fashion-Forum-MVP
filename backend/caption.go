@@ -22,7 +22,7 @@ func enrichUserInputImage(cfg AppConfig, id, gcsURL, mimeType, b64 string) {
 		var (
 			wg       sync.WaitGroup
 			desc     string
-			viewType = 1
+			viewType = viewTypeFront // default: front view if classifier fails
 			descErr  error
 		)
 		wg.Add(2)
@@ -38,13 +38,17 @@ func enrichUserInputImage(cfg AppConfig, id, gcsURL, mimeType, b64 string) {
 		go func() {
 			defer wg.Done()
 			// HF Space can't fetch from our private GCS bucket via the raw public URL,
-			// so re-sign the object path with a short-lived signed URL.
-			objectPath := strings.TrimPrefix(gcsURL, "https://storage.googleapis.com/"+gcsBucket+"/")
+			// so re-sign the object path with a short-lived signed URL. gcsURL may be
+			// gs:// (new) or https://... (legacy); parseGCSURL handles both.
 			urlForHF := gcsURL
-			if signed, sErr := gcsSignedURL(cfg, objectPath, time.Hour); sErr == nil {
-				urlForHF = signed
+			if _, objectPath, parseErr := parseGCSURL(gcsURL); parseErr == nil {
+				if signed, sErr := gcsSignedURL(cfg, objectPath, time.Hour); sErr == nil {
+					urlForHF = signed
+				} else {
+					log.Printf("[enrich] sign_for_classify_failed id=%s err=%v", id, sErr)
+				}
 			} else {
-				log.Printf("[enrich] sign_for_classify_failed id=%s err=%v", id, sErr)
+				log.Printf("[enrich] parse_url_failed id=%s err=%v", id, parseErr)
 			}
 			v, err := classifyViewType(ctx, cfg, urlForHF)
 			if err != nil {

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
+import { useAuth } from "@clerk/nextjs";
 import { backendApiUrl } from "@/lib/backend-api";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
@@ -46,6 +47,7 @@ const INITIAL: EnrichmentState = {
 };
 
 export function useImageEnrichment() {
+    const { getToken } = useAuth();
     const [state, setState] = useState<EnrichmentState>(INITIAL);
     const channelRef = useRef<RealtimeChannel | null>(null);
     const mountedRef = useRef(true);
@@ -98,9 +100,9 @@ export function useImageEnrichment() {
     }, [closeChannel]);
 
     const startEnrichment = useCallback(
-        async (params: { userId: string; imageBase64: string }) => {
-            if (!params.userId || !params.imageBase64) {
-                setState({ ...INITIAL, status: "error", error: "Missing user or image" });
+        async (params: { userId?: string; imageBase64: string }) => {
+            if (!params.imageBase64) {
+                setState({ ...INITIAL, status: "error", error: "Missing image" });
                 return;
             }
 
@@ -109,11 +111,17 @@ export function useImageEnrichment() {
 
             let data: UploadAssetResponse;
             try {
+                const token = await getToken();
+                if (!token) {
+                    throw new Error("Not authenticated");
+                }
                 const resp = await fetch(backendApiUrl("/api/upload-asset"), {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                    },
                     body: JSON.stringify({
-                        user_id: params.userId,
                         kind: "input",
                         image: params.imageBase64,
                     }),
@@ -180,7 +188,7 @@ export function useImageEnrichment() {
             });
             subscribe(id);
         },
-        [closeChannel, subscribe],
+        [closeChannel, subscribe, getToken],
     );
 
     const reset = useCallback(() => {

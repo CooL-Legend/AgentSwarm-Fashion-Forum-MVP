@@ -104,8 +104,10 @@ func main() {
 	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
 	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
 	mux.HandleFunc("/api/upload-asset", withCORS(cfg, uploadAssetHandler(cfg)))
+	mux.HandleFunc("/api/images/upload", withCORS(cfg, uploadAssetHandler(cfg)))
 	mux.HandleFunc("/api/upload-profile", withCORS(cfg, uploadProfileHandler(cfg)))
 	mux.HandleFunc("/api/user-assets", withCORS(cfg, userAssetsHandler(cfg)))
+	mux.HandleFunc("/api/images", withCORS(cfg, listUserInputImagesHandler(cfg)))
 	mux.HandleFunc("/api/tryons", withCORS(cfg, tryonsListHandler(cfg)))
 
 	server := &http.Server{

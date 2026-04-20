@@ -1,3 +1,205 @@
+# TRY-OWN Onboarding v2 — Schema Consolidation, 3-Phase Wizard, Authed Image Endpoints
+
+## What changed
+
+**Problem:** The deployed Supabase DDL had consolidated the user profile onto `public.users` (PK `id`, `gender_identity`, `date_of_birth`) and added `public.user_input_images`, but backend code still read/wrote `public."user-temp"` with `user_id`/`sex`/`age` columns. Onboarding was a 4-step single-PATCH wizard with no image upload. `/api/upload-asset` and `/api/user-assets` accepted a `user_id` body/query param with no Clerk auth — a user could read or write another user's assets. `onboarding_completed` and `onboarding_skipped` were treated as mutually exclusive, blocking the v2 semantics where a user completes required+images and then skips only the optional phase.
+
+**Solution:** Migrated all user profile reads/writes to `public.users`, restructured onboarding as three persisted phases (required → images → optional), enforced Clerk JWT on image endpoints, and decoupled the completed/skipped flags with an invariant check. Clerk webhooks and account deletion were intentionally deferred — self-heal via `bootstrapUserHandler` still covers provisioning.
+
+### Schema + DB helpers
+
+- **`backend/users_db.go`** *(removed)* — legacy single-helper file targeting the pre-consolidation `public.users` shape with `user_id` PK. Obsolete after the DDL redeploy.
+- **`backend/users_auth.go`** — constant `userTempTablePath = "user-temp"` → `usersTablePath = "users"`. Helpers renamed and retargeted:
+  - `userTempEndpoint` → `usersTableEndpoint`
+  - `fetchUserTempByID` → `fetchUserByID` (now filters `deleted_at=is.null`, queries `id=eq.`)
+  - `upsertUserTemp` → `upsertUser`, `upsertUserTempWithConflict` → `upsertUserWithConflict` (`on_conflict=id`)
+  - `updateUserTempByID` → `updateUserByID`, `insertUserTemp` → `insertUser`
+- All payloads now key on `"id"` instead of `"user_id"`, `"gender_identity"` instead of `"sex"`, `"date_of_birth"` instead of `"age"`, `"email"` instead of `"email_id"`.
+
+### `appUserProfile` struct (`backend/users_auth.go`)
+
+Renamed to match `public.users` columns: `UserID` → `ID`, `Sex` → `GenderIdentity`, replaced `Age` with `DateOfBirth`, added `Email`, `ClerkImageURL`, `AuthProvider`, `PhoneVerified`, `DeletedAt`. `EmailID` kept as legacy-only `omitempty` field for transitional compatibility.
+
+### Phase-based `onboardingUserHandler`
+
+Accepts `{ phase: "required" | "images_done" | "optional_save" | "optional_skip" }`:
+
+- **`required`** — validates `username`, `date_of_birth` (ISO-8601, age 10–120), `gender_identity`, `visual_language`; persists those fields but does **not** flip `onboarding_completed`.
+- **`images_done`** — calls the new `countUserInputImages` helper; rejects with 400 if the user has 0 rows in `user_input_images`; otherwise sets `onboarding_completed=true`.
+- **`optional_save`** — writes optional profile fields; leaves flags alone.
+- **`optional_skip`** — sets `onboarding_skipped=true`. Enforces the invariant `completed=true` before allowing skip (cannot end up in the illegal `completed=false, skipped=true` state).
+
+Legacy `{ skip: true }` and empty-phase clients are mapped to `optional_skip` / `optional_save` with the prior single-PATCH semantics so the old 4-step wizard keeps working during rollout.
+
+`validateRequiredOnboarding` now parses `date_of_birth` instead of checking `Age`, and validates `gender_identity` instead of `sex`. New `applyRequiredFields` helper writes only the Phase-1 subset.
+
+### `countUserInputImages` helper (`backend/user_images_db.go`)
+
+New `countUserInputImages(ctx, cfg, userID)` returns the number of rows in `user_input_images` for a user. Uses PostgREST `Prefer: count=exact` with `Range: 0-0` to avoid pulling the full row set. Called from the `images_done` phase and from the 5-image cap check in `uploadAssetHandler`.
+
+### Authed image endpoints (`backend/api.go`)
+
+- **`uploadAssetHandler`** — now calls `authenticatedClerkUserID` on entry and 401s on failure. Body `user_id` is ignored; the Clerk sub is authoritative. Added: 5MB size cap, mime allowlist (`image/jpeg`, `image/png`, `image/webp`), per-user 5-image cap via `countUserInputImages` (dedup hits don't count).
+- **`userAssetsHandler`** — now calls `authenticatedClerkUserID`; query `user_id` is ignored. Users can only list their own assets.
+- New constant `maxInputImagesPerUser = 5`.
+
+### Route aliases (`backend/main.go`)
+
+Registered `/api/images` (GET → `userAssetsHandler`) and `/api/images/upload` (POST → `uploadAssetHandler`) alongside the legacy `/api/user-assets` and `/api/upload-asset`. The frontend uses the new paths; legacy remain for one release cycle.
+
+### GCS bucket rename (`backend/gcs.go`)
+
+- `const gcsBucket = "agent_swarm"` → `"refleckt-media"` (separate bucket, multi-region `asia`; note the `ck` spelling — see the follow-up section below for the diagnosis). All helpers (`gcsPublicURL`, `gcsUpload`, `gcsSignedURL`, etc.) pick up the new name via the constant. Per-user folder layout under the bucket is unchanged. Existing try-on/pose paths stay under `gs://agent_swarm/users/...` for now since their DB rows already reference that bucket — only new onboarding input uploads land in `refleckt-media`.
+
+### Frontend
+
+- **`frontend/src/lib/user-types.ts`** — `UserProfile` renamed: `user_id` → `id`, `sex` → `gender_identity`, `age` → `date_of_birth`, `email_id` → `email`; added `clerk_image_url`, `auth_provider`. Split `OnboardingAnswers` into `OnboardingRequiredFields` (username, date_of_birth, gender_identity, visual_language) and `OnboardingOptionalFields` (everything else).
+- **`frontend/src/app/onboarding/page.tsx`** *(rewritten)* — 4-step wizard replaced with a 3-phase state machine:
+  - **Phase 1**: single-page required form.
+  - **Phase 2**: drag-drop / file picker up to 5 images, uploads immediately via `POST /api/images/upload` (multipart-free, base64 JSON body consistent with existing handler), polls `GET /api/images` every 3s while any upload is in-flight, Continue disabled until ≥1 image.
+  - **Phase 3**: optional fields + measurements with **Save Preferences** and **Skip for now** buttons.
+  - On mount, resolves starting phase from server state (null required fields → Phase 1; no images → Phase 2; else Phase 3). Users who already have `onboarding_completed=true` are redirected straight to `/gallery`.
+- **`frontend/src/app/components/ProfileView.tsx`** — Bootstrap body now sends `email` (not `email_id`). Completion gate tightened from `(completed || skipped)` to `completed` alone.
+- **`frontend/src/app/components/GalleryView.tsx`** — Same gate change; reads `appUser.id` instead of `appUser.user_id`; reads `gender_identity` instead of `sex` for the gender-filtered product feed.
+- **`frontend/src/app/components/InformationGrid.tsx`** — Display fields updated (`user.email`, `user.gender_identity`, height derived from `user.height_cm`).
+- **`frontend/src/app/hooks/useImageEnrichment.ts`** — Now pulls a Clerk token via `useAuth().getToken()` and sends `Authorization: Bearer` on `/api/upload-asset`; stopped sending `user_id` in the body.
+
+## Scope explicitly deferred
+
+Per user direction to keep the delta minimal:
+
+- Clerk webhooks (`/api/webhooks/clerk`) — self-heal via `bootstrapUserHandler` still covers provisioning.
+- Account deletion + 30-day hard-delete job + `DELETE /api/users`.
+- Dropping the `user-temp` table (leave in place until prod soak confirms nothing reads it).
+- `onboarding_step` resume column (resume is inferred from which required fields are null).
+- Signed upload URLs (Pattern B) — backend-mediated uploads are sufficient at current scale.
+
+## Files modified
+
+- `backend/gcs.go` — bucket rename
+- `backend/users_auth.go` — struct, handlers, validator, helpers retargeted to `public.users`; phase-based onboarding
+- `backend/users_db.go` *(removed)*
+- `backend/user_images_db.go` — added `countUserInputImages`
+- `backend/api.go` — JWT auth on upload + list handlers, 5MB/mime/5-image caps
+- `backend/main.go` — registered `/api/images` and `/api/images/upload` aliases
+- `frontend/src/lib/user-types.ts` — field renames, split types
+- `frontend/src/app/onboarding/page.tsx` — 3-phase rewrite
+- `frontend/src/app/components/ProfileView.tsx` — email rename + gate tightening
+- `frontend/src/app/components/GalleryView.tsx` — `id` / `gender_identity` reads, gate tightening
+- `frontend/src/app/components/InformationGrid.tsx` — display field renames
+- `frontend/src/app/hooks/useImageEnrichment.ts` — Bearer auth, no more `user_id` in body
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed.
+- **Frontend type check:** `cd frontend && npx tsc --noEmit` passed.
+
+## End-to-end tests (pending manual run)
+
+- New Clerk sign-up → `/onboarding` Phase 1 → row in `public.users` with `date_of_birth`, `gender_identity`, `visual_language` populated and `onboarding_completed=false`.
+- Phase 2 with 0 images → Continue rejected with 400 "at least one image is required"; with 1 image → advance flips `onboarding_completed=true`; 6th upload → 400 "image limit reached (max 5)".
+- Phase 3 "Skip for now" → `onboarding_skipped=true` while `onboarding_completed` stays `true`; redirect to `/gallery`.
+- `curl -X POST /api/images/upload` without Bearer → 401; with a Bearer for user A and `user_id: "user_B"` in the body → row written under user A's id, not B's.
+- `SELECT id FROM users WHERE onboarding_completed=false AND onboarding_skipped=true` returns 0 rows.
+- New upload lands at `gs://refleckt-media/users/{uid}/input/{image_uuid}.{ext}`.
+
+---
+
+# v2 Onboarding — Follow-up Fixes (post-merge)
+
+## What changed
+
+A set of corrections discovered while running the v2 onboarding end-to-end against the real Supabase + GCS. Three distinct issues, all in the code path the v2 migration touched.
+
+### 1. `onboarding_version` column doesn't exist on `public.users`
+
+**Symptom:** Every `POST /api/users/bootstrap` and `PATCH /api/users/onboarding` returned
+```
+PGRST204 — Could not find the 'onboarding_version' column of 'users' in the schema cache
+```
+
+**Root cause:** `onboarding_version` was a carryover column on `public."user-temp"` (added in the earlier "Clerk Google Sign-In + Onboarding on `user-temp`" migration). The consolidated `public.users` DDL never defined it, but the v2 payload builder was still writing it.
+
+**Fix:**
+- **`backend/users_auth.go`** — removed `payload["onboarding_version"] = onboardingVersion` from both `bootstrapUserHandler` (the fresh-row branch) and `onboardingUserHandler` (the phase-based payload). Dropped the unused `onboardingVersion = 1` constant and the `OnboardingVersion *int` struct field on `appUserProfile`.
+- **`frontend/src/lib/user-types.ts`** — removed `onboarding_version: number | null` from `UserProfile`.
+
+Result: bootstraps and onboarding PATCHes now succeed against the live `public.users`.
+
+### 2. Bucket name typo — `reflect-media` → `refleckt-media`
+
+**Symptom:** `GET /api/user-assets` and any upload returned
+```
+gcs list status 404: "The specified bucket does not exist."
+```
+
+**Root cause:** The actual bucket in GCP is spelled `refleckt-media` (with `ck`), not `reflect-media` as the PDF spec had transcribed. Confirmed against the GCS console listing — bucket is multi-region `asia`, storage class Standard. A brief intermediate attempt to prefix the old `agent_swarm` bucket with `reflect-media/` was discarded once it was clarified that `refleckt-media` is a genuinely separate bucket.
+
+**Fix:**
+- **`backend/gcs.go`** — `const gcsBucket = "refleckt-media"`.
+
+Result: uploads land in the right bucket; list/signed-URL calls resolve.
+
+### 3. Switched `gcs_url` storage from https public URL → `gs://` URI, UUID filenames
+
+**Problem:** Previously `user_input_images.gcs_url` stored the canonical `https://storage.googleapis.com/refleckt-media/...` public URL. That URL is permanent but relies on the bucket being publicly readable to actually serve content — our bucket is private, so those URLs always 403 in a browser. The consumer (frontend) needs a signed URL minted on each read; storing a value that *looks* like a display URL but can't be used as one is a foot-gun.
+
+Separately, input filenames were timestamp + random hex (`20260420_921663842a0da157.webp`), which is not round-trippable from a DB row to a GCS object without an explicit column mapping.
+
+**Fix:**
+- **`backend/gcs.go`** — new helpers:
+  - `gcsGSURI(objectPath)` returns `gs://refleckt-media/{path}` — the canonical DB-persisted pointer.
+  - `parseGCSURL(raw)` accepts `gs://bucket/path`, `https://storage.googleapis.com/bucket/path`, and bare `bucket/path`. Enables back-compat for rows inserted before the switch.
+  - `newUUIDv4()` generates an RFC 4122 v4 UUID string (no external dep; `crypto/rand`-based).
+- **`backend/api.go` `uploadAssetHandler`** (input kind):
+  - Pre-generate a v4 UUID used as both the `user_input_images.id` and the GCS filename.
+  - New object path: `users/{clerkID}/input/{uuid}{.ext}` (was `users/{uid}/inputs/{timestamp_random}.{ext}`).
+  - `gcs_url` is now written as `gs://refleckt-media/users/{clerkID}/input/{uuid}{.ext}`.
+  - Dedup-hit response uses `parseGCSURL` to derive the object path from whatever format the existing row has, then mints a fresh 1-hour signed URL.
+  - Upload response now always includes `signed_url` for immediate display (no separate sign step needed on the frontend).
+- **`backend/caption.go` `enrichUserInputImage`** — replaced the string-trimming-the-https-prefix trick with `parseGCSURL`, so the enrichment worker works with both new `gs://` rows and legacy `https://` rows.
+
+### 4. New DB-backed `GET /api/images` (replaces GCS-list for the onboarding poll)
+
+**Problem:** `/api/images` was previously an alias for `userAssetsHandler`, which calls `gcsList` under a `users/{uid}/` prefix and then classifies each object path. That conflated input/tryon/pose listings, required a client-side filter, and was a latency hit every time the onboarding wizard polled.
+
+**Fix:**
+- **`backend/user_images_db.go`** — new `listUserInputImages(ctx, cfg, userID)` that SELECTs `user_input_images` rows for a user, ordered by `created_at.desc`.
+- **`backend/api.go`** — new `listUserInputImagesHandler`:
+  - Clerk-authed; pulls rows only for the authenticated user.
+  - For each row, `parseGCSURL(row.gcs_url)` → object path → `gcsSignedURL(path, 1h)`.
+  - Derives `status` from enrichment state: `completed` when `description` is populated, else `pending`.
+  - Returns `{ assets: [...], images: [...] }` (both keys populated identically for transitional compatibility with the current frontend filter).
+- **`backend/main.go`** — `/api/images` now points at the new handler; `/api/user-assets` still points at the GCS-list-based `userAssetsHandler` for legacy callers that expect mixed input/tryon/pose listings.
+
+## Files modified
+
+- `backend/gcs.go` — bucket name fix, `gcsGSURI`, `parseGCSURL`, `newUUIDv4`
+- `backend/api.go` — upload path uses UUID + gs:// URI, dedup-hit uses parser, new DB-backed list handler
+- `backend/user_images_db.go` — new `listUserInputImages`
+- `backend/caption.go` — enrichment worker uses `parseGCSURL` for backwards compatibility
+- `backend/users_auth.go` — dropped `onboarding_version` from payloads/struct/constants
+- `backend/main.go` — `/api/images` rewired to the DB-backed handler
+- `frontend/src/lib/user-types.ts` — dropped `onboarding_version`
+
+## Unrelated environment note
+
+The backend initially failed to start with `missing SUPABASE_URL ... and/or SUPABASE_SERVICE_ROLE_KEY`. Root cause was the `.env` file using `:` as the key/value separator; `backend/env.go` only parses `KEY=VALUE` lines and silently skipped everything. Fix was to rewrite separators to `=`. No code change.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed after every change above.
+- **Frontend type check:** `cd frontend && npx tsc --noEmit` passed.
+- **Live smoke:** bootstrap + onboarding PATCH (phase: required) against the real `public.users` now return 200 instead of PGRST204. Image upload hits `gs://refleckt-media/users/{uid}/input/...`.
+
+## Behaviour notes
+
+- **Legacy rows:** existing `user_input_images` rows with `https://storage.googleapis.com/...` in `gcs_url` continue to work because `parseGCSURL` handles both URL shapes. No data migration required.
+- **Signed URL TTL:** 1 hour, minted on every list response. Never persisted to the DB.
+- **GCS paths:** onboarding inputs land at `refleckt-media/users/{uid}/input/{uuid}.{ext}`. Try-on and pose generations still write to `agent_swarm` via the older `saveTryOnSession` / `savePoseTransferSession` helpers; migrating those to `refleckt-media` is a separate follow-up.
+
+---
+
 # Varun — GCS Bucket, Auth Fix, Model Fix, User Decode Fix
 
 ## What changed

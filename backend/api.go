@@ -1542,10 +1542,21 @@ type uploadAssetRequest struct {
 	GarmentID string `json:"garment_id"`
 }
 
+// maxInputImagesPerUser caps the number of onboarding reference images a user
+// can upload. Matches the v2 onboarding spec.
+const maxInputImagesPerUser = 5
+
 func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Authenticated user only — body user_id is ignored.
+		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 
@@ -1555,11 +1566,9 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		input.UserID = strings.TrimSpace(input.UserID)
 		input.Kind = strings.TrimSpace(input.Kind)
-		if input.UserID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
-			return
+		if input.Kind == "" {
+			input.Kind = "input"
 		}
 		if input.Kind != "input" && input.Kind != "pose" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "kind must be 'input' or 'pose'"})
@@ -1571,6 +1580,14 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		mimeType, ext := detectImageMimeAndExt(input.Image)
+		if input.Kind == "input" {
+			switch mimeType {
+			case "image/jpeg", "image/png", "image/webp":
+			default:
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mime must be jpeg, png, or webp"})
+				return
+			}
+		}
 
 		// Only input images get the hash-dedup + DB-tracked path.
 		// Pose uploads remain GCS-only for now.
@@ -1580,62 +1597,95 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid base64 image"})
 				return
 			}
+			if len(raw) > 5*1024*1024 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image exceeds 5MB limit"})
+				return
+			}
 			sum := sha256.Sum256(raw)
 			hashHex := hex.EncodeToString(sum[:])
 
-			if existing, err := findUserInputImageByHash(r.Context(), cfg, input.UserID, hashHex); err != nil {
-				log.Printf("[api/upload-asset] dedup_lookup_failed user=%s err=%v", input.UserID, err)
+			if existing, err := findUserInputImageByHash(r.Context(), cfg, clerkID, hashHex); err != nil {
+				log.Printf("[api/upload-asset] dedup_lookup_failed user=%s err=%v", clerkID, err)
 			} else if existing != nil {
-				log.Printf("[api/upload-asset] dedup_hit user=%s id=%s", input.UserID, existing.ID)
+				log.Printf("[api/upload-asset] dedup_hit user=%s id=%s", clerkID, existing.ID)
+				_, existingObjectPath, parseErr := parseGCSURL(existing.GCSURL)
+				if parseErr != nil {
+					log.Printf("[api/upload-asset] dedup_parse_failed id=%s err=%v", existing.ID, parseErr)
+				}
 				// Backfill enrichment if this row was inserted before the pipeline was wired
 				// (or if a prior enrichment attempt failed and left description null).
 				if existing.Description == nil || strings.TrimSpace(*existing.Description) == "" {
 					log.Printf("[api/upload-asset] dedup_backfill_enrich id=%s", existing.ID)
 					enrichUserInputImage(cfg, existing.ID, existing.GCSURL, mimeType, input.Image)
 				}
+				signedURL, _ := gcsSignedURL(cfg, existingObjectPath, time.Hour)
 				writeJSON(w, http.StatusOK, map[string]any{
-					"object_path": strings.TrimPrefix(existing.GCSURL, "https://storage.googleapis.com/"+gcsBucket+"/"),
-					"gs_uri":      "gs://" + gcsBucket + "/" + strings.TrimPrefix(existing.GCSURL, "https://storage.googleapis.com/"+gcsBucket+"/"),
+					"object_path": existingObjectPath,
+					"gs_uri":      gcsGSURI(existingObjectPath),
 					"gcs_url":     existing.GCSURL,
+					"signed_url":  signedURL,
 					"duplicate":   true,
 					"id":          existing.ID,
 				})
 				return
 			}
 
-			objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
+			// Enforce per-user 5-image cap on fresh uploads (dedup hits above are free).
+			if count, err := countUserInputImages(r.Context(), cfg, clerkID); err == nil {
+				if count >= maxInputImagesPerUser {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "image limit reached (max 5)"})
+					return
+				}
+			} else {
+				log.Printf("[api/upload-asset] count_failed user=%s err=%v", clerkID, err)
+			}
+
+			// Pre-generate the DB id so the GCS filename matches 1:1.
+			imageID, uuidErr := newUUIDv4()
+			if uuidErr != nil {
+				log.Printf("[api/upload-asset] uuid_failed user=%s err=%v", clerkID, uuidErr)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "id generation failed"})
+				return
+			}
+			objectPath := fmt.Sprintf("users/%s/input/%s%s", clerkID, imageID, ext)
 			if err := gcsUpload(r.Context(), cfg, objectPath, mimeType, raw); err != nil {
-				log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", input.UserID, input.Kind, err)
+				log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", clerkID, input.Kind, err)
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Storage upload failed"})
 				return
 			}
 
-			gcsURL := gcsPublicURL(objectPath)
-			signedURL, signErr := gcsSignedURL(cfg, objectPath, 7*24*time.Hour)
-			if signErr != nil {
-				log.Printf("[api/upload-asset] sign_failed user=%s err=%v", input.UserID, signErr)
-			}
+			gsURI := gcsGSURI(objectPath)
 			row, insertErr := insertUserInputImage(r.Context(), cfg, map[string]any{
-				"user_id":    input.UserID,
-				"gcs_url":    gcsURL,
-				"signed_url": signedURL,
-				"hash":       hashHex,
-				"view_type":  1,
+				"id":        imageID,
+				"user_id":   clerkID,
+				"gcs_url":   gsURI,
+				"hash":      hashHex,
+				"view_type": viewTypeFront, // provisional — enrichment worker may flip to viewTypeBack
 			})
 			if insertErr != nil {
-				log.Printf("[api/upload-asset] db_insert_failed user=%s err=%v", input.UserID, insertErr)
+				log.Printf("[api/upload-asset] db_insert_failed user=%s err=%v", clerkID, insertErr)
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "DB insert failed: " + insertErr.Error()})
 				return
 			}
 
 			// Async: caption (Gemini) + view-type classify (HF) in parallel, then PATCH both fields.
-			enrichUserInputImage(cfg, row.ID, gcsURL, mimeType, input.Image)
+			// Enrichment pulls bytes via the public https url; that still works whether or not
+			// the object's ACL is public, because the helper authenticates with the service
+			// account token internally — but our worker re-fetches the bytes from the image
+			// base64 passed in here, so the URL argument is just for logging / reference.
+			enrichUserInputImage(cfg, row.ID, gsURI, mimeType, input.Image)
 
-			log.Printf("[api/upload-asset] ok user=%s kind=input path=%s", input.UserID, objectPath)
+			signedURL, signErr := gcsSignedURL(cfg, objectPath, time.Hour)
+			if signErr != nil {
+				log.Printf("[api/upload-asset] sign_failed user=%s err=%v", clerkID, signErr)
+			}
+
+			log.Printf("[api/upload-asset] ok user=%s kind=input path=%s", clerkID, objectPath)
 			writeJSON(w, http.StatusOK, map[string]any{
 				"object_path": objectPath,
-				"gs_uri":      "gs://" + gcsBucket + "/" + objectPath,
-				"gcs_url":     gcsURL,
+				"gs_uri":      gsURI,
+				"gcs_url":     gsURI,
+				"signed_url":  signedURL,
 				"duplicate":   false,
 				"id":          row.ID,
 			})
@@ -1643,14 +1693,14 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		// kind == "pose" — GCS-only, unchanged.
-		objectPath := userObjectPath(input.UserID, input.Kind, newAssetFilename(ext))
+		objectPath := userObjectPath(clerkID, input.Kind, newAssetFilename(ext))
 		if err := gcsUploadBase64(r.Context(), cfg, objectPath, mimeType, input.Image); err != nil {
-			log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", input.UserID, input.Kind, err)
+			log.Printf("[api/upload-asset] upload_failed user=%s kind=%s err=%v", clerkID, input.Kind, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Storage upload failed"})
 			return
 		}
 
-		log.Printf("[api/upload-asset] ok user=%s kind=%s path=%s", input.UserID, input.Kind, objectPath)
+		log.Printf("[api/upload-asset] ok user=%s kind=%s path=%s", clerkID, input.Kind, objectPath)
 		writeJSON(w, http.StatusOK, map[string]string{
 			"object_path": objectPath,
 			"gs_uri":      "gs://" + gcsBucket + "/" + objectPath,
@@ -1714,6 +1764,71 @@ type userAssetItem struct {
 	Size       string `json:"size,omitempty"`
 }
 
+type userInputImageItem struct {
+	ID          string  `json:"id"`
+	GSURI       string  `json:"gs_uri"`
+	ObjectPath  string  `json:"object_path"`
+	SignedURL   string  `json:"signed_url"`
+	Status      string  `json:"status"`
+	ViewType    any     `json:"view_type,omitempty"`
+	Description *string `json:"description,omitempty"`
+	CreatedAt   string  `json:"created_at,omitempty"`
+}
+
+// listUserInputImagesHandler is the DB-backed replacement for /api/images.
+// Reads user_input_images rows for the authenticated user, parses the stored
+// gs:// URI on each row, and mints a fresh 1-hour signed URL for display.
+func listUserInputImagesHandler(cfg AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			return
+		}
+
+		rows, err := listUserInputImages(r.Context(), cfg, clerkID)
+		if err != nil {
+			log.Printf("[api/images] list_failed user=%s err=%v", clerkID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to list images"})
+			return
+		}
+
+		items := make([]userInputImageItem, 0, len(rows))
+		for _, row := range rows {
+			_, objectPath, parseErr := parseGCSURL(row.GCSURL)
+			if parseErr != nil {
+				log.Printf("[api/images] parse_failed id=%s err=%v", row.ID, parseErr)
+				continue
+			}
+			signedURL, signErr := gcsSignedURL(cfg, objectPath, time.Hour)
+			if signErr != nil {
+				log.Printf("[api/images] sign_failed id=%s err=%v", row.ID, signErr)
+				continue
+			}
+			status := "pending"
+			if row.Description != nil && strings.TrimSpace(*row.Description) != "" {
+				status = "completed"
+			}
+			items = append(items, userInputImageItem{
+				ID:          row.ID,
+				GSURI:       row.GCSURL,
+				ObjectPath:  objectPath,
+				SignedURL:   signedURL,
+				Status:      status,
+				ViewType:    row.ViewType,
+				Description: row.Description,
+				CreatedAt:   row.CreatedAt,
+			})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"assets": items, "images": items})
+	}
+}
+
 func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1721,12 +1836,13 @@ func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		userID := strings.TrimSpace(r.URL.Query().Get("user_id"))
-		kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
-		if userID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "user_id is required"})
+		// Authenticated user only — query user_id param is ignored.
+		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
+		kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
 
 		prefix := fmt.Sprintf("users/%s/", userID)
 		if kindFilter != "" {

@@ -19,9 +19,14 @@ import (
 	"time"
 )
 
+const usersTablePath = "users"
+
+// Phase values accepted by onboardingUserHandler.
 const (
-	userTempTablePath = "user-temp"
-	onboardingVersion = 1
+	onboardingPhaseRequired     = "required"
+	onboardingPhaseImagesDone   = "images_done"
+	onboardingPhaseOptionalSave = "optional_save"
+	onboardingPhaseOptionalSkip = "optional_skip"
 )
 
 var (
@@ -71,29 +76,33 @@ var (
 )
 
 type appUserProfile struct {
-	UserID                string   `json:"user_id"`
-	FirstName             *string  `json:"first_name"`
-	LastName              *string  `json:"last_name"`
-	Username              *string  `json:"username"`
-	Bio                   *string  `json:"bio"`
-	EmailID               *string  `json:"email_id"`
-	PhoneNumber           *string  `json:"phone_number"`
-	Location              *string  `json:"location"`
-	Sex                   *string  `json:"sex"`
-	Height                *string  `json:"height"`
-	FrontImage            *string      `json:"front_image"`
-	BackImage             *string      `json:"back_image"`
-	Images                imageURLList `json:"images"`
+	ID                    string       `json:"id"`
+	FirstName             *string      `json:"first_name"`
+	LastName              *string      `json:"last_name"`
+	Username              *string      `json:"username"`
+	Bio                   *string      `json:"bio"`
+	Email                 *string      `json:"email"`
+	EmailID               *string      `json:"email_id,omitempty"`
+	PhoneNumber           *string      `json:"phone_number"`
+	PhoneVerified         *bool        `json:"phone_verified,omitempty"`
+	Location              *string      `json:"location"`
+	GenderIdentity        *string      `json:"gender_identity"`
+	DateOfBirth           *string      `json:"date_of_birth"`
+	ClerkImageURL         *string      `json:"clerk_image_url,omitempty"`
+	AuthProvider          *string      `json:"auth_provider,omitempty"`
+	Height                *string      `json:"height,omitempty"`
+	FrontImage            *string      `json:"front_image,omitempty"`
+	BackImage             *string      `json:"back_image,omitempty"`
+	Images                imageURLList `json:"images,omitempty"`
 	CreatedAt             *string      `json:"created_at"`
 	UpdatedAt             *string      `json:"updated_at"`
-	ProfileVector         any          `json:"profile_vector"`
+	DeletedAt             *string      `json:"deleted_at,omitempty"`
+	ProfileVector         any          `json:"user_profile_vector,omitempty"`
 	OnboardingCompleted   *bool        `json:"onboarding_completed"`
 	OnboardingSkipped     *bool        `json:"onboarding_skipped"`
-	OnboardingVersion     *int         `json:"onboarding_version"`
 	OnboardingCompletedAt *string      `json:"onboarding_completed_at"`
 	OnboardingSkippedAt   *string      `json:"onboarding_skipped_at"`
 
-	Age                 *int         `json:"age"`
 	Occupation          *string      `json:"occupation"`
 	HeightCM            *float64     `json:"height_cm"`
 	ShoulderWidthCM     *float64     `json:"shoulder_width_cm"`
@@ -113,21 +122,26 @@ type appUserProfile struct {
 }
 
 type bootstrapUserRequest struct {
-	FirstName *string `json:"first_name"`
-	LastName  *string `json:"last_name"`
-	Username  *string `json:"username"`
-	EmailID   *string `json:"email_id"`
-	Age       *int    `json:"age"`
+	FirstName   *string `json:"first_name"`
+	LastName    *string `json:"last_name"`
+	Username    *string `json:"username"`
+	Email       *string `json:"email"`
+	EmailID     *string `json:"email_id"`
+	DateOfBirth *string `json:"date_of_birth"`
 }
 
 type onboardingUserRequest struct {
+	// Phase values: "required" | "images_done" | "optional_save" | "optional_skip".
+	// Empty string is treated as "optional_save" for legacy single-PATCH clients.
+	Phase string `json:"phase"`
+	// Legacy flag — clients that still send {skip: true} map to phase "optional_skip".
 	Skip bool `json:"skip"`
 
-	FirstName *string `json:"first_name"`
-	LastName  *string `json:"last_name"`
-	Username  *string `json:"username"`
-	Age       *int    `json:"age"`
-	Sex       *string `json:"sex"`
+	FirstName      *string `json:"first_name"`
+	LastName       *string `json:"last_name"`
+	Username       *string `json:"username"`
+	DateOfBirth    *string `json:"date_of_birth"`
+	GenderIdentity *string `json:"gender_identity"`
 
 	VisualLanguage *string `json:"visual_language"`
 	Occupation     *string `json:"occupation"`
@@ -162,7 +176,7 @@ func currentUserHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		user, err := fetchUserTempByID(r.Context(), cfg, userID)
+		user, err := fetchUserByID(r.Context(), cfg, userID)
 		if err != nil {
 			if errors.Is(err, errUserNotFound) {
 				writeJSON(w, http.StatusNotFound, map[string]string{"error": "User not found."})
@@ -173,7 +187,10 @@ func currentUserHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"user": user})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"user":                user,
+			"requires_onboarding": requiresOnboarding(user),
+		})
 	}
 }
 
@@ -196,35 +213,9 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		// Step 1: ensure a row exists in public.users for this Clerk identity.
-		// public.users.user_id (text PK) stores the Clerk id directly. Everything
-		// else in this handler is best-effort; if this fails the user cannot be
-		// gated into the app.
-		provisionFields := map[string]any{}
-		if v := cleanOptionalString(input.FirstName); v != nil {
-			provisionFields["first_name"] = *v
-		}
-		if v := cleanOptionalString(input.LastName); v != nil {
-			provisionFields["last_name"] = *v
-		}
-		if v := cleanOptionalString(input.Username); v != nil {
-			provisionFields["username"] = *v
-		}
-		if v := cleanOptionalString(input.EmailID); v != nil {
-			provisionFields["email_id"] = *v
-		}
-		if err := upsertUserByClerkID(r.Context(), cfg, userID, provisionFields); err != nil {
-			log.Printf("[api/users/bootstrap] provision_failed userId=%s err=%v", userID, err)
-			writeJSON(w, http.StatusBadGateway, map[string]string{
-				"error": "User provisioning failed",
-				"code":  "provision_failed",
-			})
-			return
-		}
-
 		now := time.Now().UTC().Format(time.RFC3339)
 		payload := map[string]any{
-			"user_id":    userID,
+			"id":         userID,
 			"updated_at": now,
 		}
 		if value := cleanOptionalString(input.FirstName); value != nil {
@@ -236,14 +227,17 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 		if value := cleanOptionalString(input.Username); value != nil {
 			payload["username"] = *value
 		}
-		if value := cleanOptionalString(input.EmailID); value != nil {
-			payload["email_id"] = *value
+		// Accept either `email` (new) or `email_id` (legacy client) on the way in.
+		if value := cleanOptionalString(input.Email); value != nil {
+			payload["email"] = *value
+		} else if value := cleanOptionalString(input.EmailID); value != nil {
+			payload["email"] = *value
 		}
-		if input.Age != nil && *input.Age > 0 {
-			payload["age"] = *input.Age
+		if value := cleanOptionalString(input.DateOfBirth); value != nil {
+			payload["date_of_birth"] = *value
 		}
 
-		existing, err := fetchUserTempByID(r.Context(), cfg, userID)
+		existing, err := fetchUserByID(r.Context(), cfg, userID)
 		if err != nil && !errors.Is(err, errUserNotFound) {
 			log.Printf("[api/users/bootstrap] fetch_failed userId=%s err=%v", userID, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to access user table."})
@@ -251,7 +245,7 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		if err == nil {
-			if len(payload) == 2 { // user_id + updated_at only
+			if len(payload) == 2 { // id + updated_at only — nothing to merge
 				writeJSON(w, http.StatusOK, map[string]any{
 					"user":                existing,
 					"requires_onboarding": requiresOnboarding(existing),
@@ -259,7 +253,7 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 				return
 			}
 
-			updated, upsertErr := upsertUserTemp(r.Context(), cfg, payload)
+			updated, upsertErr := upsertUser(r.Context(), cfg, payload)
 			if upsertErr != nil {
 				log.Printf("[api/users/bootstrap] update_failed userId=%s err=%v", userID, upsertErr)
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to bootstrap user."})
@@ -274,27 +268,13 @@ func bootstrapUserHandler(cfg AppConfig) http.HandlerFunc {
 
 		payload["onboarding_completed"] = false
 		payload["onboarding_skipped"] = false
-		payload["onboarding_version"] = onboardingVersion
 		applyBootstrapDefaults(payload, userID)
 
-		created, err := upsertUserTemp(r.Context(), cfg, payload)
+		created, err := upsertUser(r.Context(), cfg, payload)
 		if err != nil {
-			// Backward-compatible retry for environments where newer onboarding columns
-			// may not exist yet on "user-temp".
-			legacyPayload := map[string]any{
-				"user_id":    payload["user_id"],
-				"updated_at": payload["updated_at"],
-				"first_name": payload["first_name"],
-				"last_name":  payload["last_name"],
-				"username":   payload["username"],
-				"email_id":   payload["email_id"],
-			}
-			created, err = upsertUserTemp(r.Context(), cfg, legacyPayload)
-			if err != nil {
-				log.Printf("[api/users/bootstrap] upsert_failed userId=%s err=%v", userID, err)
-				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to bootstrap user."})
-				return
-			}
+			log.Printf("[api/users/bootstrap] upsert_failed userId=%s err=%v", userID, err)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to bootstrap user."})
+			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -323,75 +303,165 @@ func onboardingUserHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		now := time.Now().UTC().Format(time.RFC3339)
-		payload := map[string]any{
-			"user_id":            userID,
-			"onboarding_version": onboardingVersion,
-			"updated_at":         now,
+		phase := strings.TrimSpace(strings.ToLower(input.Phase))
+		if phase == "" {
+			// Legacy clients: {skip:true} = skip optional, otherwise treat as optional_save.
+			if input.Skip {
+				phase = onboardingPhaseOptionalSkip
+			} else {
+				phase = onboardingPhaseOptionalSave
+			}
 		}
 
-		if input.Skip {
+		now := time.Now().UTC().Format(time.RFC3339)
+		payload := map[string]any{
+			"id":         userID,
+			"updated_at": now,
+		}
+
+		switch phase {
+		case onboardingPhaseRequired:
+			if err := validateRequiredOnboarding(input); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if err := applyRequiredFields(payload, input); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			// Do not flip completed — Phase 2 (image upload) is still pending.
+
+		case onboardingPhaseImagesDone:
+			count, err := countUserInputImages(r.Context(), cfg, userID)
+			if err != nil {
+				log.Printf("[api/users/onboarding] image_count_failed userId=%s err=%v", userID, err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to verify uploaded images."})
+				return
+			}
+			if count < 1 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "at least one image is required"})
+				return
+			}
+			payload["onboarding_completed"] = true
+			payload["onboarding_completed_at"] = now
+
+		case onboardingPhaseOptionalSave:
 			if err := applyOptionalProfileFields(payload, input); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			payload["onboarding_completed"] = false
-			payload["onboarding_skipped"] = true
-			payload["onboarding_completed_at"] = nil
-			payload["onboarding_skipped_at"] = now
+			// optional_save is the legacy "complete" path — for pre-phase clients we
+			// still flip completed=true so behaviour doesn't regress.
+			if input.Phase == "" {
+				if err := validateRequiredOnboarding(input); err != nil {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+					return
+				}
+				payload["onboarding_completed"] = true
+				payload["onboarding_completed_at"] = now
+			}
 
-			user, err := upsertUserTemp(r.Context(), cfg, payload)
+		case onboardingPhaseOptionalSkip:
+			existing, err := fetchUserByID(r.Context(), cfg, userID)
 			if err != nil {
-				log.Printf("[api/users/onboarding] skip_upsert_failed userId=%s err=%v", userID, err)
-				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to update onboarding status."})
+				log.Printf("[api/users/onboarding] skip_fetch_failed userId=%s err=%v", userID, err)
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to load user."})
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"user": user})
+			// Invariant: cannot skip the optional phase before required+images are done.
+			if existing.OnboardingCompleted == nil || !*existing.OnboardingCompleted {
+				if input.Phase == "" {
+					// Legacy skip: permit but warn — treat as an implicit "done everything
+					// required + skipping optional". Requires validated required fields.
+					if err := validateRequiredOnboarding(input); err != nil {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+						return
+					}
+					payload["onboarding_completed"] = true
+					payload["onboarding_completed_at"] = now
+				} else {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "complete required fields and upload an image before skipping"})
+					return
+				}
+			}
+			payload["onboarding_skipped"] = true
+			payload["onboarding_skipped_at"] = now
+
+		default:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid phase"})
 			return
 		}
 
-		if err := validateRequiredOnboarding(input); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if err := applyOptionalProfileFields(payload, input); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-
-		payload["onboarding_completed"] = true
-		payload["onboarding_skipped"] = false
-		payload["onboarding_completed_at"] = now
-		payload["onboarding_skipped_at"] = nil
-
-		user, err := upsertUserTemp(r.Context(), cfg, payload)
+		user, err := upsertUser(r.Context(), cfg, payload)
 		if err != nil {
-			log.Printf("[api/users/onboarding] upsert_failed userId=%s err=%v", userID, err)
+			log.Printf("[api/users/onboarding] upsert_failed phase=%s userId=%s err=%v", phase, userID, err)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to save onboarding preferences."})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"user": user})
+		writeJSON(w, http.StatusOK, map[string]any{"user": user, "phase": phase})
 	}
 }
 
 func validateRequiredOnboarding(input onboardingUserRequest) error {
-	if cleanOptionalString(input.FirstName) == nil {
-		return errors.New("first_name is required")
-	}
-	if cleanOptionalString(input.LastName) == nil {
-		return errors.New("last_name is required")
-	}
 	if cleanOptionalString(input.Username) == nil {
 		return errors.New("username is required")
 	}
-	if input.Age == nil || *input.Age < 10 || *input.Age > 120 {
-		return errors.New("age must be between 10 and 120")
+	dob := cleanOptionalString(input.DateOfBirth)
+	if dob == nil {
+		return errors.New("date_of_birth is required")
+	}
+	parsed, err := time.Parse("2006-01-02", *dob)
+	if err != nil {
+		// Also accept full RFC3339 timestamps from date pickers that append T00:00:00.
+		parsed, err = time.Parse(time.RFC3339, *dob)
+		if err != nil {
+			return errors.New("date_of_birth must be an ISO-8601 date (YYYY-MM-DD)")
+		}
+	}
+	now := time.Now().UTC()
+	years := now.Year() - parsed.Year()
+	if now.YearDay() < parsed.YearDay() {
+		years--
+	}
+	if years < 10 || years > 120 {
+		return errors.New("date_of_birth must correspond to an age between 10 and 120")
 	}
 	if value := cleanOptionalString(input.VisualLanguage); value == nil {
 		return errors.New("visual_language is required")
 	}
-	if value := cleanOptionalString(input.Sex); value == nil {
-		return errors.New("sex is required")
+	if value := cleanOptionalString(input.GenderIdentity); value == nil {
+		return errors.New("gender_identity is required")
+	}
+	return nil
+}
+
+// applyRequiredFields writes only Phase-1 fields onto the payload.
+func applyRequiredFields(payload map[string]any, input onboardingUserRequest) error {
+	if value := cleanOptionalString(input.Username); value != nil {
+		payload["username"] = *value
+	}
+	if value := cleanOptionalString(input.DateOfBirth); value != nil {
+		payload["date_of_birth"] = *value
+	}
+	if value := cleanOptionalString(input.GenderIdentity); value != nil {
+		normalized := strings.ToLower(*value)
+		if _, ok := sexOptions[normalized]; !ok {
+			return fmt.Errorf("invalid gender_identity value: %s", *value)
+		}
+		payload["gender_identity"] = normalized
+	}
+	if value := cleanOptionalString(input.VisualLanguage); value != nil {
+		normalized := strings.ToLower(*value)
+		if _, ok := visualLanguageOptions[normalized]; !ok {
+			return fmt.Errorf("invalid visual_language value: %s", *value)
+		}
+		payload["visual_language"] = normalized
+	}
+	if value := cleanOptionalString(input.FirstName); value != nil {
+		payload["first_name"] = *value
+	}
+	if value := cleanOptionalString(input.LastName); value != nil {
+		payload["last_name"] = *value
 	}
 	return nil
 }
@@ -406,18 +476,15 @@ func applyOptionalProfileFields(payload map[string]any, input onboardingUserRequ
 	if value := cleanOptionalString(input.Username); value != nil {
 		payload["username"] = *value
 	}
-	if input.Age != nil {
-		if *input.Age < 0 || *input.Age > 120 {
-			return errors.New("age must be between 0 and 120")
-		}
-		payload["age"] = *input.Age
+	if value := cleanOptionalString(input.DateOfBirth); value != nil {
+		payload["date_of_birth"] = *value
 	}
-	if value := cleanOptionalString(input.Sex); value != nil {
+	if value := cleanOptionalString(input.GenderIdentity); value != nil {
 		normalized := strings.ToLower(*value)
 		if _, ok := sexOptions[normalized]; !ok {
-			return fmt.Errorf("invalid sex value: %s", *value)
+			return fmt.Errorf("invalid gender_identity value: %s", *value)
 		}
-		payload["sex"] = normalized
+		payload["gender_identity"] = normalized
 	}
 	if value := cleanOptionalString(input.VisualLanguage); value != nil {
 		normalized := strings.ToLower(*value)
@@ -548,7 +615,7 @@ func applyBootstrapDefaults(payload map[string]any, userID string) {
 		return
 	}
 
-	if emailRaw, ok := payload["email_id"].(string); ok {
+	if emailRaw, ok := payload["email"].(string); ok {
 		email := strings.TrimSpace(emailRaw)
 		if email != "" {
 			parts := strings.SplitN(email, "@", 2)
@@ -600,18 +667,19 @@ func requiresOnboarding(user *appUserProfile) bool {
 	return !completed && !skipped
 }
 
-func userTempEndpoint(cfg AppConfig) string {
-	return strings.TrimRight(cfg.SupabaseURL, "/") + "/rest/v1/" + userTempTablePath
+func usersTableEndpoint(cfg AppConfig) string {
+	return strings.TrimRight(cfg.SupabaseURL, "/") + "/rest/v1/" + usersTablePath
 }
 
-func fetchUserTempByID(ctx context.Context, cfg AppConfig, userID string) (*appUserProfile, error) {
-	endpoint, err := url.Parse(userTempEndpoint(cfg))
+func fetchUserByID(ctx context.Context, cfg AppConfig, userID string) (*appUserProfile, error) {
+	endpoint, err := url.Parse(usersTableEndpoint(cfg))
 	if err != nil {
 		return nil, err
 	}
 	q := endpoint.Query()
 	q.Set("select", "*")
-	q.Set("user_id", "eq."+strings.TrimSpace(userID))
+	q.Set("id", "eq."+strings.TrimSpace(userID))
+	q.Set("deleted_at", "is.null")
 	q.Set("limit", "1")
 	endpoint.RawQuery = q.Encode()
 
@@ -644,16 +712,15 @@ func fetchUserTempByID(ctx context.Context, cfg AppConfig, userID string) (*appU
 	return &user, nil
 }
 
-func upsertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
-	// Primary path: true upsert when user_id has a unique/exclusion constraint.
-	user, err := upsertUserTempWithConflict(ctx, cfg, payload)
+func upsertUser(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
+	// Primary path: true upsert on id PK.
+	user, err := upsertUserWithConflict(ctx, cfg, payload)
 	if err == nil {
 		return user, nil
 	}
 
-	// Fallback path: supports environments where user_id is not a unique key and
-	// on_conflict cannot be used.
-	userIDRaw, ok := payload["user_id"].(string)
+	// Fallback path: PATCH-then-INSERT for environments without on_conflict.
+	userIDRaw, ok := payload["id"].(string)
 	if !ok {
 		return nil, err
 	}
@@ -662,7 +729,7 @@ func upsertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) 
 		return nil, err
 	}
 
-	updated, updateErr := updateUserTempByID(ctx, cfg, userID, payload)
+	updated, updateErr := updateUserByID(ctx, cfg, userID, payload)
 	if updateErr == nil {
 		return updated, nil
 	}
@@ -670,20 +737,20 @@ func upsertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) 
 		return nil, fmt.Errorf("%v; fallback update failed: %w", err, updateErr)
 	}
 
-	created, createErr := insertUserTemp(ctx, cfg, payload)
+	created, createErr := insertUser(ctx, cfg, payload)
 	if createErr != nil {
 		return nil, fmt.Errorf("%v; fallback insert failed: %w", err, createErr)
 	}
 	return created, nil
 }
 
-func upsertUserTempWithConflict(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
-	endpoint, err := url.Parse(userTempEndpoint(cfg))
+func upsertUserWithConflict(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
+	endpoint, err := url.Parse(usersTableEndpoint(cfg))
 	if err != nil {
 		return nil, err
 	}
 	q := endpoint.Query()
-	q.Set("on_conflict", "user_id")
+	q.Set("on_conflict", "id")
 	endpoint.RawQuery = q.Encode()
 
 	body, err := json.Marshal([]map[string]any{payload})
@@ -722,13 +789,14 @@ func upsertUserTempWithConflict(ctx context.Context, cfg AppConfig, payload map[
 	return &user, nil
 }
 
-func updateUserTempByID(ctx context.Context, cfg AppConfig, userID string, payload map[string]any) (*appUserProfile, error) {
-	endpoint, err := url.Parse(userTempEndpoint(cfg))
+func updateUserByID(ctx context.Context, cfg AppConfig, userID string, payload map[string]any) (*appUserProfile, error) {
+	endpoint, err := url.Parse(usersTableEndpoint(cfg))
 	if err != nil {
 		return nil, err
 	}
 	q := endpoint.Query()
-	q.Set("user_id", "eq."+strings.TrimSpace(userID))
+	q.Set("id", "eq."+strings.TrimSpace(userID))
+	q.Set("deleted_at", "is.null")
 	endpoint.RawQuery = q.Encode()
 
 	body, err := json.Marshal(payload)
@@ -767,8 +835,8 @@ func updateUserTempByID(ctx context.Context, cfg AppConfig, userID string, paylo
 	return &user, nil
 }
 
-func insertUserTemp(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
-	endpoint, err := url.Parse(userTempEndpoint(cfg))
+func insertUser(ctx context.Context, cfg AppConfig, payload map[string]any) (*appUserProfile, error) {
+	endpoint, err := url.Parse(usersTableEndpoint(cfg))
 	if err != nil {
 		return nil, err
 	}
