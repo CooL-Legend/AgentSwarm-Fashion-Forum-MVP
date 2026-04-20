@@ -8,7 +8,7 @@ import {
     useState,
 } from "react";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
@@ -79,7 +79,7 @@ export default function GalleryView() {
 
         const loadCurrentUser = async () => {
             try {
-                const response = await fetch(backendApiUrl("/api/users"));
+                const response = await backendFetch("/api/users");
                 if (!response.ok) {
                     throw new Error("Failed to load user");
                 }
@@ -153,7 +153,7 @@ export default function GalleryView() {
             }
 
             try {
-                const response = await fetch(`${backendApiUrl("/api/products")}?${params.toString()}`, {
+                const response = await backendFetch(`/api/products?${params.toString()}`, {
                     cache: "no-store",
                     signal: controller.signal,
                 });

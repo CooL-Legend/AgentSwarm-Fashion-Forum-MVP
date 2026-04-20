@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 
 interface TryonRow {
     id: string;
@@ -37,7 +37,7 @@ export default function HistoryPage() {
         let cancelled = false;
         (async () => {
             try {
-                const resp = await fetch(backendApiUrl("/api/tryons"));
+                const resp = await backendFetch("/api/tryons");
                 if (!resp.ok) throw new Error(`Failed to load (${resp.status})`);
                 const data = await resp.json();
                 if (!cancelled) setTryons(data.tryons ?? []);

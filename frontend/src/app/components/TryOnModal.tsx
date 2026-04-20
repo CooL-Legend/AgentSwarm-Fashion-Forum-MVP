@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import { useImageEnrichment } from "../hooks/useImageEnrichment";
 import EnrichmentStatusPill from "./EnrichmentStatusPill";
 
@@ -75,7 +75,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
         setResultImage(null);
 
         try {
-            const resp = await fetch(backendApiUrl("/api/tryon"), {
+            const resp = await backendFetch("/api/tryon", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -122,7 +122,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
         setPoseResultImage(null);
         setError(null);
         try {
-            const resp = await fetch(backendApiUrl("/api/pose-transfer"), {
+            const resp = await backendFetch("/api/pose-transfer", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

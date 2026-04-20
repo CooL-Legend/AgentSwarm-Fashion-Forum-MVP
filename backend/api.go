@@ -792,9 +792,9 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		clerkID, err := currentUserID(cfg)
+		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 
@@ -1712,9 +1712,9 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		// Authenticated user only — body user_id is ignored.
-		clerkID, err := currentUserID(cfg)
+		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 
@@ -1942,9 +1942,9 @@ func listUserInputImagesHandler(cfg AppConfig) http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		clerkID, err := currentUserID(cfg)
+		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 
@@ -1995,9 +1995,9 @@ func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		// Authenticated user only — query user_id param is ignored.
-		userID, err := currentUserID(cfg)
+		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 		kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
@@ -2046,9 +2046,9 @@ func tryonsListHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		userID, err := currentUserID(cfg)
+		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
 			return
 		}
 

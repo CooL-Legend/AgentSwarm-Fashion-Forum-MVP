@@ -13,7 +13,7 @@ type AppConfig struct {
 	CORSOrigin        string
 	SupabaseURL       string
 	SupabaseAPIKey    string
-	CurrentUserID     string // single-user mode: every handler acts as this user
+	ClerkSecretKey    string // used to fetch Clerk JWKS for JWT verification
 	ScraperURL        string
 	GoogleClientEmail string
 	GooglePrivateKey  string
@@ -33,7 +33,7 @@ func loadConfig() (AppConfig, error) {
 		CORSOrigin:        getenv("BACKEND_CORS_ORIGIN", "*"),
 		SupabaseURL:       getenv("SUPABASE_URL", getenv("NEXT_PUBLIC_SUPABASE_URL", "")),
 		SupabaseAPIKey:    getenv("SUPABASE_SERVICE_ROLE_KEY", getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")),
-		CurrentUserID:     stringsTrimQuotes(getenv("CURRENT_USER_ID", "")),
+		ClerkSecretKey:    stringsTrimQuotes(getenv("CLERK_SECRET_KEY", "")),
 		ScraperURL:        normalizeScraperURL(getenv("SCRAPER_URL", "https://varun2808-product-image-scraper.hf.space")),
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
@@ -50,8 +50,8 @@ func loadConfig() (AppConfig, error) {
 	if cfg.SupabaseURL == "" || cfg.SupabaseAPIKey == "" {
 		return cfg, errConfig("missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL fallback) and/or SUPABASE_SERVICE_ROLE_KEY")
 	}
-	if cfg.CurrentUserID == "" {
-		return cfg, errConfig("missing CURRENT_USER_ID — this build operates in single-user mode; set it in .env to a public.users.id value")
+	if cfg.ClerkSecretKey == "" {
+		return cfg, errConfig("missing CLERK_SECRET_KEY — required for Clerk JWT verification")
 	}
 
 	return cfg, nil

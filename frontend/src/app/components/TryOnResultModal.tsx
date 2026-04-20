@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 
 interface Props {
     personPreview: string;
@@ -56,7 +56,7 @@ export default function TryOnResultModal({ personPreview, garmentImageUrl, resul
         setPoseResultImage(null);
         setError(null);
         try {
-            const resp = await fetch(backendApiUrl("/api/pose-transfer"), {
+            const resp = await backendFetch("/api/pose-transfer", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

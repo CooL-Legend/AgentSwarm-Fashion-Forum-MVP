@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 
 interface TryOnTaskInput {
     personBase64: string;
@@ -54,7 +54,7 @@ export function useTryOnTask() {
 
             (async () => {
                 try {
-                    const resp = await fetch(backendApiUrl("/api/tryon"), {
+                    const resp = await backendFetch("/api/tryon", {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({

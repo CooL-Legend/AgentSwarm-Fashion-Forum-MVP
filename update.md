@@ -1,3 +1,154 @@
+# Clerk Reinstated + Gemini Try-On + Enrichment Lifecycle
+
+## Context
+
+This session covers a sequence of overlapping changes: (a) final polish on the single-user mode we landed last session (cosmetic auth cleanup, unused `@clerk/nextjs` package removal), (b) splitting the Gemini model into two purpose-built slots because one model can't serve both image-gen and captioning, (c) promoting `user_input_images` through a real `pending → completed/failed` lifecycle with a polling fallback on the frontend, (d) swapping the try-on handler from Vertex VTO to prompt-driven Gemini Nano Banana, (e) a script to delete a user across Clerk + Supabase, and (f) reinstating Clerk JWT auth end-to-end — after the previous session had ripped it out. Each piece is small; the combined delta is large.
+
+## 1. Split `GEMINI_MODEL` into model + caption model
+
+**Problem:** Caption enrichment started failing with `INVALID_ARGUMENT: The request is not supported by this model` after `GEMINI_MODEL` was set to `gemini-3.1-flash-image-preview` (Nano Banana 2.0). That model is an image-editing model and rejects `"responseModalities": ["TEXT"]`. Pose-transfer needs the image-gen model; caption needs a vision→text model. One env var can't satisfy both.
+
+**Root cause (two bugs):**
+1. `.env` had `GEMINI_MODEL=gemini-3.1-flash-image # Nano Bana 2.0`. The env parser at [backend/env.go:65](backend/env.go#L65) does not strip inline `#` comments, so the value became literally `gemini-3.1-flash-image # Nano Bana 2.0`. URL-encoded, the space became `%20` and the `#` terminated the path — pose-transfer URLs came back as `…/models/gemini-3.1-flash-image%20` and returned 404.
+2. Even after fixing the inline-comment issue, using that single model for captioning still fails because Nano Banana can't emit text-only output.
+
+**Fix:**
+- **`.env`** — moved "Nano Banana 2.0" onto its own `#` line; set `GEMINI_MODEL=gemini-3.1-flash-image-preview` (note the required `-preview` suffix); added new `GEMINI_CAPTION_MODEL=gemini-3.1-flash`.
+- **`backend/main.go`** — `AppConfig.GeminiCaptionModel string`; loaded from `GEMINI_CAPTION_MODEL` with fallback `gemini-2.5-flash` (vision+text capable).
+- **`backend/caption.go`** — `captionUserImage` now reads `cfg.GeminiCaptionModel` instead of `cfg.GeminiModel`.
+- **`backend/api.go`** + **`backend/caption.go`** — stale in-code fallbacks corrected from `gemini-3.1-flash-image` → `gemini-3.1-flash-image-preview` so the try-on/pose paths don't 404 when the env is unset.
+
+## 2. `user_input_images.status` lifecycle + RLS-proof polling
+
+**Problem:** Upload UI was stuck on "Understanding your image…" indefinitely. The hook ([`useImageEnrichment.ts`](frontend/src/app/hooks/useImageEnrichment.ts)) was waiting on a Supabase realtime UPDATE event that never arrived (realtime publication not enabled on `user_input_images` and/or RLS blocking the anon SELECT). Separately, rows were left at the default `status='pending'` forever — the PATCH that wrote `description` + `view_type` never touched `status`.
+
+**Fix (backend):**
+- **`backend/user_images_db.go`** — `updateUserInputImageEnrichment` now also writes `"status": "completed"` in the same PATCH. Added **`markUserInputImageFailed(ctx, cfg, id)`** that PATCHes `status='failed'`.
+- **`backend/caption.go`** — on `captionUserImage` error, enrichment worker calls `markUserInputImageFailed` before returning, so failed rows don't sit at `pending` forever.
+- Enum values aligned with the actual DDL (`image_processing_status`: `pending | processing | completed | failed`); earlier draft mistakenly wrote `complete` — corrected to `completed`.
+
+**Fix (frontend):**
+- **`useImageEnrichment.ts`** — `viewType` type corrected from `number | null` → `string | null` (the backend enum is `'front'`/`'back'`, not an int) and the realtime handler's runtime guard switched from `typeof === "number"` → `=== "string"`.
+- Extracted `stopWatchers()` and `applyReady(row)` helpers so the realtime-subscribe path and the new polling path share the same completion logic.
+- **Added a parallel polling fallback**: every 2s for up to 90s the hook calls `GET /api/images` (backend service-role, bypasses any RLS issue) and scans for a matching `id` with a populated `description`. Whichever of realtime or polling sees the enrichment first flips the state to `ready` and stops the other. The dedup-hit branch also now goes through `/api/images` rather than the browser Supabase client, for the same RLS-avoidance reason.
+
+## 3. Try-On handler: Vertex VTO → Gemini Nano Banana with prompt
+
+**Problem:** The try-on handler called Vertex AI's `virtual-try-on-001` product — a closed VTO model with no prompt. The user wanted prompt-driven generation so per-user body description and per-garment feature text can steer the output.
+
+**Fix:**
+- **`backend/prompts.go`** — added `tryonBasePrompt` constant containing the user-provided BASE_PROMPT verbatim ("Virtual try-on. Generate a single photorealistic image…").
+- **`backend/api.go`** — new **`fetchProductByID(ctx, cfg, id)`** helper. `productRow` extended with `GarmentFeature *string` (column `garment_feature` on `public.products`).
+- **`backend/user_images_db.go`** — new **`fetchUserInputImageByID(ctx, cfg, id)`** helper returning the row with its `description`.
+- **`backend/api.go` `tryOnHandler`** rewritten. Same request/response shape for the frontend, but the body:
+  1. `ensureUserInputImage` → `inputImageID` (unchanged).
+  2. `fetchUserInputImageByID(inputImageID)` → `userDesc` (empty-string tolerant; missing enrichment ⇒ thinner prompt, not a failure).
+  3. `fetchProductByID(productID)` → `garmentFeature` (same tolerance).
+  4. Prompt = `tryonBasePrompt + "\n\nPerson Description:\n" + userDesc + "\n\nGarment Description:\n" + garmentFeature`.
+  5. `insertTryonGenerationProcessing` (unchanged — DDL aligned: `user_input_image_id` NOT NULL, `tryon_output_only_when_completed` check satisfied by `markTryonCompleted`).
+  6. POST to `https://aiplatform.googleapis.com/v1/projects/{proj}/locations/global/publishers/google/models/{cfg.GeminiModel}:generateContent` with `contents[0].parts = [garment_image inlineData, person_image inlineData, {text: prompt}]` — garment first per the BASE_PROMPT directive. `generationConfig.responseModalities = ["IMAGE", "TEXT"]`.
+  7. Extract PNG via existing `extractInlineGeneratedImage`; upload to `users/{uid}/generations/tryon/{gen_id}.png` (path unchanged); `markTryonCompleted` with `output_gcs_url = gs://refleckt-media/<path>`.
+  8. Any failure post-insert → `markTryonFailed` with error message; 502 + JSON error.
+- Removed the old Vertex VTO POST block and the base64 `cloth_image` handling (frontend only sends URL).
+
+## 4. `scripts/delete_user.js`
+
+**New script** to wipe a user from both Clerk and `public.users`:
+- Usage: `node scripts/delete_user.js <clerk_user_id>`.
+- Reads `.env` for `CLERK_SECRET_KEY`, `SUPABASE_URL` (or `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`.
+- DELETE `/rest/v1/users?id=eq.<id>` — `ON DELETE CASCADE` on the FKs takes down `tryon_generations` + `user_input_images` automatically.
+- DELETE `https://api.clerk.com/v1/users/<id>` — skipped gracefully if `CLERK_SECRET_KEY` isn't set; 404 treated as "already gone".
+
+## 5. Clerk auth reinstated
+
+**Problem:** Previous session removed Clerk entirely in favor of a single-user `CURRENT_USER_ID` env var. User now wants Clerk back — unauthenticated visitors must sign in, backend attributes every request to the verified Clerk sub.
+
+**Backend:**
+- **`backend/users_auth.go`** — restored the full Clerk verification stack from commit `8ca5299`:
+  - Types: `clerkJWTHeader`, `clerkJWTClaims`, `clerkJWK`, `clerkJWKSResponse`, `clerkJWKSCache` (10-min TTL).
+  - `globalClerkJWKSCache.refresh(ctx, cfg)` — fetches `https://api.clerk.com/v1/jwks` with `Bearer CLERK_SECRET_KEY`.
+  - `verifyClerkSessionToken(ctx, cfg, token)` — RS256 RSA PKCS1v15 verify, `exp`/`nbf`/`iat` checks.
+  - `authenticatedClerkUserID(ctx, cfg, r)` — reads `Authorization: Bearer …`, verifies, returns `sub`, rejects non-`user_*` subjects.
+  - New **`ensureUserRow(ctx, cfg, userID)`** — lazy upsert on first authed request. POST with `Prefer: resolution=ignore-duplicates` so duplicate inserts are idempotent. Results cached in-process for 5 minutes via `seenUsers` map to skip the DB round-trip on subsequent calls.
+  - After successful verify: `log.Printf("[auth] authed user=%s %s %s", sub, method, path)` — single debug line per authed request, useful for tailing `run-backend` logs while testing.
+- **`backend/main.go`** — `AppConfig.ClerkSecretKey` (loaded from `CLERK_SECRET_KEY`); `CurrentUserID` dropped; `loadConfig` errors on missing `CLERK_SECRET_KEY`.
+- **`backend/api.go`** — 5 call sites swapped from `currentUserID(cfg)` → `authenticatedClerkUserID(r.Context(), cfg, r)`. Error responses now 401 `Unauthorized` instead of 500 `CURRENT_USER_ID not configured`.
+
+**Frontend:**
+- **`frontend/package.json`** — re-added `@clerk/nextjs@^7.2.3` (had been removed in the cleanup).
+- **`frontend/src/app/layout.tsx`** — wraps the app in `<ClerkProvider>`. Header uses `<Show when="signed-in">` / `<Show when="signed-out">` — Clerk v7 replaced `<SignedIn>` / `<SignedOut>` with a single `<Show>` component taking a `when` predicate. Signed-out state shows a `<SignInButton>` pill; signed-in state shows the nav links + `<UserButton />`.
+- **`frontend/src/proxy.ts`** — new (not `middleware.ts` — Next.js 16 deprecated that filename). Uses `clerkMiddleware` + `createRouteMatcher` to gate everything except `/sign-in(.*)` and `/sign-up(.*)`.
+- **`frontend/src/app/sign-in/[[...sign-in]]/page.tsx`** + **`/sign-up/[[...sign-up]]/page.tsx`** — minimal centered Clerk `<SignIn />` / `<SignUp />` component pages.
+- **`frontend/src/lib/backend-api.ts`** — new **`backendFetch(path, init?)`** that calls `window.Clerk?.session?.getToken()` and sets `Authorization: Bearer …` on every request before delegating to `fetch(backendApiUrl(path), …)`. `backendApiUrl` remains for the internal composition.
+- **8 call sites migrated** from `fetch(backendApiUrl("/api/…"), …)` → `backendFetch("/api/…", …)` across: `useImageEnrichment.ts`, `useTryOnTask.ts`, `history/page.tsx`, `TryOnResultModal.tsx`, `GarmentInput.tsx`, `ProfileView.tsx`, `GalleryView.tsx`, `TryOnModal.tsx`. sed-driven replace with a per-file import swap.
+
+**Deliberately out of scope:**
+- `POST /api/webhooks/clerk` (Svix-verified `user.created` webhook) — not needed because `ensureUserRow` covers the "new user appears" case on first request.
+- Onboarding UI / multi-phase questions — no re-introduction this pass.
+- RLS policies — handlers still use service role + filter by Clerk sub, same as before.
+
+## 6. Polish from the tail end of single-user mode
+
+Before Clerk came back, a round of polish landed:
+- **`frontend/src/lib/user-types.ts`** — dropped dead fields (`clerk_image_url`, `auth_provider`, `onboarding_completed`, `onboarding_skipped`, `onboarding_completed_at`, `onboarding_skipped_at`) and the 3 onboarding interfaces (`OnboardingRequiredFields`, `OnboardingOptionalFields`, `OnboardingAnswers`). When Clerk came back, the `appUserProfile` backend struct kept its equivalents for forward compatibility with the DDL, but the frontend type stays slim — it only needs what the profile page actually reads.
+- **`frontend/src/app/components/ProfileHeader.tsx`** — removed the `clerk_image_url` avatar branch (no field to read anymore). Always renders initials. When Clerk came back, this was not reverted — the Clerk-provided image now comes through `<UserButton />` in the header, not via `appUser.clerk_image_url`.
+- **`@clerk/nextjs`** was removed from `package.json` during the single-user phase, then re-added in step 5 above.
+- Stale onboarding/Clerk docstrings and one error string (`CURRENT_USER_ID not configured`) cleaned up in `backend/users_auth.go`, `backend/api.go`, `backend/user_images_db.go`, `backend/main.go` — reworded when Clerk came back to reflect the new state.
+
+## 7. Next.js 16 cache + middleware
+
+- `.next/` deleted once to clear a corrupted Turbopack persistence directory (`Failed to open database: invalid digit found in string`). Cause: persistence format shift across Next versions; fix is to let Turbopack rebuild the cache.
+- `frontend/src/middleware.ts` → `frontend/src/proxy.ts` — Next.js 16 deprecated the `middleware` filename convention. Same contents, only the name changed.
+
+## Files modified
+
+### Backend
+- `backend/users_auth.go` — restored Clerk JWT stack, `ensureUserRow`, `authenticatedClerkUserID`, debug log line
+- `backend/main.go` — `AppConfig.ClerkSecretKey` in / `CurrentUserID` out; `AppConfig.GeminiCaptionModel` in; error string reworded
+- `backend/api.go` — `productRow.GarmentFeature`; `fetchProductByID`; try-on rewritten to Gemini prompt-driven path; 5 call sites swapped to `authenticatedClerkUserID`; stale fallback model strings fixed; docstring wording
+- `backend/user_images_db.go` — `fetchUserInputImageByID`; `updateUserInputImageEnrichment` writes `status='completed'`; new `markUserInputImageFailed`; docstring wording
+- `backend/caption.go` — reads `cfg.GeminiCaptionModel`; calls `markUserInputImageFailed` on failure
+- `backend/prompts.go` — `tryonBasePrompt` constant
+
+### Frontend
+- `frontend/package.json` + `package-lock.json` — `@clerk/nextjs` removed then re-added
+- `frontend/src/app/layout.tsx` — `<ClerkProvider>` + `<Show when="…">` header, `<UserButton />`, sign-in pill
+- `frontend/src/proxy.ts` *(new)* — Clerk route gate (file name is `proxy`, not `middleware`, per Next 16)
+- `frontend/src/app/sign-in/[[...sign-in]]/page.tsx` *(new)*
+- `frontend/src/app/sign-up/[[...sign-up]]/page.tsx` *(new)*
+- `frontend/src/lib/backend-api.ts` — added `backendFetch` wrapper
+- `frontend/src/app/hooks/useImageEnrichment.ts` — type fix, `stopWatchers`/`applyReady` helpers, polling fallback, `backendFetch` migration
+- `frontend/src/app/hooks/useTryOnTask.ts` — `backendFetch` migration
+- `frontend/src/app/history/page.tsx` — `backendFetch` migration
+- `frontend/src/app/components/TryOnResultModal.tsx` — `backendFetch` migration
+- `frontend/src/app/components/TryOnModal.tsx` — `backendFetch` migration
+- `frontend/src/app/components/GarmentInput.tsx` — `backendFetch` migration
+- `frontend/src/app/components/ProfileView.tsx` — `backendFetch` migration
+- `frontend/src/app/components/GalleryView.tsx` — `backendFetch` migration (including the templated `?gender=` path)
+- `frontend/src/app/components/ProfileHeader.tsx` — always-initials avatar (no `clerk_image_url` field to read)
+- `frontend/src/lib/user-types.ts` — trimmed dead fields + onboarding interfaces
+
+### Scripts
+- `scripts/delete_user.js` *(new)* — CLI: `node scripts/delete_user.js <clerk_user_id>`
+
+### Env
+- `.env` — `GEMINI_MODEL=gemini-3.1-flash-image-preview` (comment moved off-line); `GEMINI_CAPTION_MODEL=gemini-3.1-flash` added; `CURRENT_USER_ID` removed; `CLERK_SECRET_KEY` confirmed present.
+
+## Validation completed
+
+- **Backend build:** `cd backend && go build ./...` passed after each step.
+- **Frontend type check:** `cd frontend && npx tsc --noEmit` passed.
+- **Clerk package prune + re-install:** `node_modules/@clerk` absent during the removal phase; re-installed cleanly at v7.2.3.
+
+## Behaviour notes
+
+- **Debug log line** (`[auth] authed user=user_… METHOD /path`) prints on every successful JWT verify. Safe to grep for — useful for confirming a user id in local tail.
+- **Lazy user upsert** is idempotent and in-memory-cached for 5 min. Insert failures are logged but not returned; the next request retries.
+- **`public.products.garment_feature`** is the column the new try-on prompt reads. If the column doesn't exist on your instance, the fetch fails soft (logged, empty garment description) and the try-on still runs with a thinner prompt — switch this to a hard fail if preferred.
+- **Polling poll interval** is 2s for 90s. A new enrichment job typically completes in 3–8s, so most flows flip via the first or second poll even when Supabase realtime isn't configured.
+
+---
+
 # TRY-OWN Onboarding v2 — Schema Consolidation, 3-Phase Wizard, Authed Image Endpoints
 
 ## What changed

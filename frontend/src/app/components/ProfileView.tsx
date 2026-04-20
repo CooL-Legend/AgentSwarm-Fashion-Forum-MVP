@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import type { UserProfile } from "@/lib/user-types";
 import ProfileHeader from "./ProfileHeader";
 import HeroVisuals from "./HeroVisuals";
@@ -75,7 +75,7 @@ export default function ProfileView() {
 
         const loadProfile = async () => {
             try {
-                const response = await fetch(backendApiUrl("/api/users"), {
+                const response = await backendFetch("/api/users", {
                     signal: controller.signal,
                 });
                 if (!response.ok) {
@@ -88,7 +88,7 @@ export default function ProfileView() {
                 // Fetch the user's uploaded reference photos for the hero + gallery.
                 // Failure here shouldn't block the profile from rendering.
                 try {
-                    const imagesResp = await fetch(backendApiUrl("/api/images"), {
+                    const imagesResp = await backendFetch("/api/images", {
                         signal: controller.signal,
                     });
                     if (imagesResp.ok) {

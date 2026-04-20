@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 
 export type EnrichmentStatus =
@@ -116,7 +116,7 @@ export function useImageEnrichment() {
             elapsed += 2000;
             if (!mountedRef.current) return;
             try {
-                const resp = await fetch(backendApiUrl("/api/images"));
+                const resp = await backendFetch("/api/images");
                 if (resp.ok) {
                     const data = await resp.json();
                     const list: Array<{ id: string; description: string | null; view_type: string | null }> =
@@ -149,7 +149,7 @@ export function useImageEnrichment() {
 
             let data: UploadAssetResponse;
             try {
-                const resp = await fetch(backendApiUrl("/api/upload-asset"), {
+                const resp = await backendFetch("/api/upload-asset", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
@@ -182,7 +182,7 @@ export function useImageEnrichment() {
             // Dedup hit: row might already be enriched. Check once via backend (bypasses RLS).
             if (duplicate) {
                 try {
-                    const resp = await fetch(backendApiUrl("/api/images"));
+                    const resp = await backendFetch("/api/images");
                     if (resp.ok) {
                         const payload = await resp.json();
                         const list: Array<{ id: string; description: string | null; view_type: string | null }> =
