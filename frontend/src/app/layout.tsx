@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Manrope } from "next/font/google";
 import Link from "next/link";
 import { ClerkProvider, Show, SignInButton, UserButton } from "@clerk/nextjs";
+import { UserProvider } from "./components/UserProvider";
 import "./globals.css";
 
 const manrope = Manrope({ subsets: ["latin"] });
@@ -16,6 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ClerkProvider>
             <html lang="en" className="dark">
                 <body className={`${manrope.className} min-h-screen bg-zinc-950 text-zinc-100 antialiased`}>
+                    <UserProvider>
                     <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur-md">
                         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4">
                             <Link href="/" className="group flex items-center gap-3">
@@ -54,6 +56,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         </div>
                     </header>
                     {children}
+                    </UserProvider>
                 </body>
             </html>
         </ClerkProvider>

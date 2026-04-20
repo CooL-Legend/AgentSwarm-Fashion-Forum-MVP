@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { backendFetch } from "@/lib/backend-api";
-import type { UserProfile } from "@/lib/user-types";
+import { useUserProfile } from "./UserProvider";
 import ProfileHeader from "./ProfileHeader";
 import HeroVisuals from "./HeroVisuals";
 import InformationGrid from "./InformationGrid";
@@ -63,62 +63,39 @@ function ProfileSkeleton() {
 }
 
 export default function ProfileView() {
-    const [user, setUser] = useState<UserProfile | null>(null);
+    const { user, loading: userLoading, error: userError } = useUserProfile();
     const [images, setImages] = useState<ProfileImage[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
+        if (!user) return;
         const controller = new AbortController();
-        setLoading(true);
-        setError(null);
 
-        const loadProfile = async () => {
+        (async () => {
             try {
-                const response = await backendFetch("/api/users", {
+                const imagesResp = await backendFetch("/api/images", {
                     signal: controller.signal,
                 });
-                if (!response.ok) {
-                    throw new Error("Failed to load profile.");
+                if (imagesResp.ok) {
+                    const imagesData = await imagesResp.json();
+                    const list: ProfileImage[] = Array.isArray(imagesData?.images)
+                        ? imagesData.images
+                        : Array.isArray(imagesData?.assets)
+                          ? imagesData.assets
+                          : [];
+                    setImages(list);
                 }
-
-                const data = await response.json();
-                setUser(data?.user ?? null);
-
-                // Fetch the user's uploaded reference photos for the hero + gallery.
-                // Failure here shouldn't block the profile from rendering.
-                try {
-                    const imagesResp = await backendFetch("/api/images", {
-                        signal: controller.signal,
-                    });
-                    if (imagesResp.ok) {
-                        const imagesData = await imagesResp.json();
-                        const list: ProfileImage[] = Array.isArray(imagesData?.images)
-                            ? imagesData.images
-                            : Array.isArray(imagesData?.assets)
-                              ? imagesData.assets
-                              : [];
-                        setImages(list);
-                    }
-                } catch (imgErr) {
-                    if (!controller.signal.aborted) {
-                        console.warn("[profile] images_fetch_failed", imgErr);
-                    }
+            } catch (imgErr) {
+                if (!controller.signal.aborted) {
+                    console.warn("[profile] images_fetch_failed", imgErr);
                 }
-
-                setLoading(false);
-            } catch (err: unknown) {
-                if (controller.signal.aborted) return;
-                const message = err instanceof Error ? err.message : "Failed to load profile.";
-                setError(message);
-                setLoading(false);
             }
-        };
-
-        loadProfile();
+        })();
 
         return () => controller.abort();
-    }, []);
+    }, [user]);
+
+    const loading = userLoading || (!user && !userError);
+    const error = userError;
 
     return (
         <main className="mx-auto max-w-6xl px-4 py-8">

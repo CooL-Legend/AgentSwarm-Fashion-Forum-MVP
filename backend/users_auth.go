@@ -301,7 +301,97 @@ func clerkJWKToRSAPublicKey(jwk clerkJWK) (*rsa.PublicKey, error) {
 }
 
 // -----------------------------------------------------------------------------
-// Lazy user upsert — creates a minimal public.users row on first authed request.
+// Clerk Backend API — fetch the full user record so we can enrich the row on
+// first sign-up with email / name / image / provider.
+// -----------------------------------------------------------------------------
+
+type clerkEmailAddress struct {
+	ID           string `json:"id"`
+	EmailAddress string `json:"email_address"`
+}
+
+type clerkExternalAccount struct {
+	Provider string `json:"provider"`
+}
+
+type clerkUserPayload struct {
+	ID                    string                 `json:"id"`
+	EmailAddresses        []clerkEmailAddress    `json:"email_addresses"`
+	PrimaryEmailAddressID string                 `json:"primary_email_address_id"`
+	FirstName             *string                `json:"first_name"`
+	LastName              *string                `json:"last_name"`
+	Username              *string                `json:"username"`
+	ImageURL              *string                `json:"image_url"`
+	ExternalAccounts      []clerkExternalAccount `json:"external_accounts"`
+}
+
+func (p *clerkUserPayload) primaryEmail() string {
+	if p == nil {
+		return ""
+	}
+	for _, e := range p.EmailAddresses {
+		if e.ID != "" && e.ID == p.PrimaryEmailAddressID {
+			return strings.TrimSpace(e.EmailAddress)
+		}
+	}
+	if len(p.EmailAddresses) > 0 {
+		return strings.TrimSpace(p.EmailAddresses[0].EmailAddress)
+	}
+	return ""
+}
+
+func (p *clerkUserPayload) authProvider() string {
+	if p == nil || len(p.ExternalAccounts) == 0 {
+		return "email"
+	}
+	provider := strings.TrimSpace(p.ExternalAccounts[0].Provider)
+	if provider == "" {
+		return "email"
+	}
+	return strings.TrimPrefix(provider, "oauth_")
+}
+
+func fetchClerkUser(ctx context.Context, cfg AppConfig, userID string) (*clerkUserPayload, error) {
+	if strings.TrimSpace(cfg.ClerkSecretKey) == "" {
+		return nil, errors.New("CLERK_SECRET_KEY is required")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return nil, errors.New("userID is required")
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	endpoint := "https://api.clerk.com/v1/users/" + url.PathEscape(userID)
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.ClerkSecretKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("clerk users fetch failed: status=%d body=%s", resp.StatusCode, string(rawBody))
+	}
+
+	log.Printf("[auth] clerk_user_fetch id=%s status=%d body=%s", userID, resp.StatusCode, string(rawBody))
+
+	var payload clerkUserPayload
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		return nil, err
+	}
+	return &payload, nil
+}
+
+// -----------------------------------------------------------------------------
+// Lazy user upsert — creates a public.users row on first authed request,
+// enriched from Clerk's Backend API when available.
 // -----------------------------------------------------------------------------
 
 var (
@@ -326,27 +416,78 @@ func ensureUserRow(ctx context.Context, cfg AppConfig, userID string) {
 	seenUsersMu.Unlock()
 
 	existing, err := fetchUserByID(ctx, cfg, userID)
-	if err == nil && existing != nil {
-		seenUsersMu.Lock()
-		seenUsers[userID] = time.Now()
-		seenUsersMu.Unlock()
-		return
-	}
 	if err != nil && !errors.Is(err, errUserNotFound) {
 		log.Printf("[auth] ensure_user_lookup_failed id=%s err=%v", userID, err)
 		return
 	}
 
+	if existing != nil && existing.Email != nil && strings.TrimSpace(*existing.Email) != "" {
+		seenUsersMu.Lock()
+		seenUsers[userID] = time.Now()
+		seenUsersMu.Unlock()
+		return
+	}
+
+	clerkFields := map[string]any{}
+	if clerkUser, cerr := fetchClerkUser(ctx, cfg, userID); cerr != nil {
+		log.Printf("[auth] ensure_user_clerk_fetch_failed id=%s err=%v", userID, cerr)
+	} else {
+		if raw, merr := json.Marshal(clerkUser); merr == nil {
+			log.Printf("[auth] ensure_user_clerk_payload id=%s payload=%s", userID, string(raw))
+		}
+		if email := clerkUser.primaryEmail(); email != "" {
+			clerkFields["email"] = email
+		}
+		if clerkUser.FirstName != nil && strings.TrimSpace(*clerkUser.FirstName) != "" {
+			clerkFields["first_name"] = strings.TrimSpace(*clerkUser.FirstName)
+		}
+		if clerkUser.LastName != nil && strings.TrimSpace(*clerkUser.LastName) != "" {
+			clerkFields["last_name"] = strings.TrimSpace(*clerkUser.LastName)
+		}
+		if clerkUser.Username != nil && strings.TrimSpace(*clerkUser.Username) != "" {
+			clerkFields["username"] = strings.TrimSpace(*clerkUser.Username)
+		} else {
+			clerkFields["username"] = userID
+		}
+		if clerkUser.ImageURL != nil && strings.TrimSpace(*clerkUser.ImageURL) != "" {
+			clerkFields["clerk_image_url"] = strings.TrimSpace(*clerkUser.ImageURL)
+		}
+		clerkFields["auth_provider"] = clerkUser.authProvider()
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339)
-	body, _ := json.Marshal([]map[string]any{{
-		"id":         userID,
-		"created_at": now,
-		"updated_at": now,
-	}})
+	if existing == nil {
+		row := map[string]any{
+			"id":                   userID,
+			"created_at":           now,
+			"updated_at":           now,
+			"onboarding_completed": false,
+			"username":             userID,
+		}
+		for k, v := range clerkFields {
+			row[k] = v
+		}
+		if !postUsersInsert(ctx, cfg, userID, row) {
+			return
+		}
+	} else if len(clerkFields) > 0 {
+		clerkFields["updated_at"] = now
+		if !patchUserByID(ctx, cfg, userID, clerkFields) {
+			return
+		}
+	}
+
+	seenUsersMu.Lock()
+	seenUsers[userID] = time.Now()
+	seenUsersMu.Unlock()
+}
+
+func postUsersInsert(ctx context.Context, cfg AppConfig, userID string, row map[string]any) bool {
+	body, _ := json.Marshal([]map[string]any{row})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, usersTableEndpoint(cfg), strings.NewReader(string(body)))
 	if err != nil {
 		log.Printf("[auth] ensure_user_request_failed id=%s err=%v", userID, err)
-		return
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("apikey", cfg.SupabaseAPIKey)
@@ -356,17 +497,51 @@ func ensureUserRow(ctx context.Context, cfg AppConfig, userID string) {
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
 		log.Printf("[auth] ensure_user_insert_failed id=%s err=%v", userID, err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusConflict {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		log.Printf("[auth] ensure_user_insert_bad_status id=%s status=%d body=%s", userID, resp.StatusCode, string(raw))
-		return
+		return false
 	}
-	seenUsersMu.Lock()
-	seenUsers[userID] = time.Now()
-	seenUsersMu.Unlock()
+	return true
+}
+
+func patchUserByID(ctx context.Context, cfg AppConfig, userID string, fields map[string]any) bool {
+	endpoint, err := url.Parse(usersTableEndpoint(cfg))
+	if err != nil {
+		log.Printf("[auth] ensure_user_patch_url_failed id=%s err=%v", userID, err)
+		return false
+	}
+	q := endpoint.Query()
+	q.Set("id", "eq."+strings.TrimSpace(userID))
+	endpoint.RawQuery = q.Encode()
+
+	body, _ := json.Marshal(fields)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		log.Printf("[auth] ensure_user_patch_request_failed id=%s err=%v", userID, err)
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+	req.Header.Set("Prefer", "return=minimal")
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		log.Printf("[auth] ensure_user_patch_failed id=%s err=%v", userID, err)
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		log.Printf("[auth] ensure_user_patch_bad_status id=%s status=%d body=%s", userID, resp.StatusCode, string(raw))
+		return false
+	}
+	log.Printf("[auth] ensure_user_enriched id=%s fields=%d", userID, len(fields))
+	return true
 }
 
 // -----------------------------------------------------------------------------

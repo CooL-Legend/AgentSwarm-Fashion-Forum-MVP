@@ -9,6 +9,7 @@ import {
 } from "react";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
 import { backendFetch } from "@/lib/backend-api";
+import { useUserProfile } from "./UserProvider";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
@@ -48,9 +49,7 @@ export default function GalleryView() {
     const [error, setError] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [debouncedSearch, setDebouncedSearch] = useState("");
-    const [userId, setUserId] = useState<string | null>(null);
-    const [userGender, setUserGender] = useState<string | null>(null);
-    const [genderResolved, setGenderResolved] = useState(false);
+    const { user: appUser, loading: userLoading, error: userError } = useUserProfile();
     const [lightbox, setLightbox] = useState<{ item: ProductCardItem; initialIndex: number } | null>(null);
     const [garmentSelection, setGarmentSelection] = useState<GarmentSelection | null>(null);
     const [tryOnImage, setTryOnImage] = useState<{ imageUrl: string; garmentId?: string } | null>(null);
@@ -74,47 +73,26 @@ export default function GalleryView() {
 
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
 
+    const userGender = useMemo<string | null>(() => {
+        const raw = appUser?.gender_identity;
+        const gender = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+        if (!gender) return null;
+        const genderMap: Record<string, string> = {
+            male: "men",
+            female: "women",
+            non_binary: "",
+            prefer_not_to_say: "",
+        };
+        return genderMap[gender] ?? gender;
+    }, [appUser?.gender_identity]);
+    const userId = appUser?.id ?? null;
+    const genderResolved = !userLoading;
+
     useEffect(() => {
-        let cancelled = false;
-
-        const loadCurrentUser = async () => {
-            try {
-                const response = await backendFetch("/api/users");
-                if (!response.ok) {
-                    throw new Error("Failed to load user");
-                }
-                const payload = await response.json();
-                const appUser = payload?.user ?? payload;
-                const raw = appUser?.gender_identity;
-                const gender = typeof raw === "string" ? raw.trim().toLowerCase() : null;
-                const genderMap: Record<string, string> = {
-                    male: "men",
-                    female: "women",
-                    non_binary: "",
-                    prefer_not_to_say: "",
-                };
-                if (!cancelled) {
-                    setUserGender(gender ? (genderMap[gender] ?? gender) : null);
-                    if (appUser?.id) setUserId(appUser.id);
-                }
-            } catch (error) {
-                if (!cancelled) {
-                    setUserGender(null);
-                    setError(error instanceof Error ? error.message : "Failed to load user profile");
-                }
-            } finally {
-                if (!cancelled) {
-                    setGenderResolved(true);
-                }
-            }
-        };
-
-        loadCurrentUser();
-
-        return () => {
-            cancelled = true;
-        };
-    }, []);
+        if (userError) {
+            setError(userError);
+        }
+    }, [userError]);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
