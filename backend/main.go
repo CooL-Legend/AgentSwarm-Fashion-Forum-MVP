@@ -112,6 +112,9 @@ func main() {
 	mux.HandleFunc("/api/user-assets", withCORS(cfg, userAssetsHandler(cfg)))
 	mux.HandleFunc("/api/images", withCORS(cfg, listUserInputImagesHandler(cfg)))
 	mux.HandleFunc("/api/tryons", withCORS(cfg, tryonsListHandler(cfg)))
+	mux.HandleFunc("POST /api/user/{userId}/onboarding", withCORS(cfg, saveOnboardingHandler(cfg)))
+	mux.HandleFunc("GET /api/user/{userId}/onboarding-status", withCORS(cfg, onboardingStatusHandler(cfg)))
+	mux.HandleFunc("POST /api/user/upload-media", withCORS(cfg, uploadMediaHandler(cfg)))
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

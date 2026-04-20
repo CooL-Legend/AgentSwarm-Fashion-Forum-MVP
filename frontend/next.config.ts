@@ -10,6 +10,24 @@ const nextConfig: NextConfig = {
         root: __dirname,
     },
     allowedDevOrigins: ['192.168.3.117'],
+    experimental: {
+        serverActions: {
+            bodySizeLimit: '10mb',
+        },
+    },
+    async rewrites() {
+        const backendUrl =
+            process.env.BACKEND_URL ||
+            process.env.NEXT_PUBLIC_BACKEND_URL ||
+            process.env.NEXT_PUBLIC_BACKEND_API_BASE_URL ||
+            'http://127.0.0.1:8080';
+        return [
+            {
+                source: '/go-api/:path*',
+                destination: `${backendUrl}/api/:path*`,
+            },
+        ];
+    },
 };
 
 export default nextConfig;

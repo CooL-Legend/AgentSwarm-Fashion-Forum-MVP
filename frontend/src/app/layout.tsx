@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Manrope } from "next/font/google";
 import Link from "next/link";
 import { ClerkProvider, Show, SignInButton, UserButton } from "@clerk/nextjs";
+import { Toaster } from "sonner";
 import { UserProvider } from "./components/UserProvider";
 import "./globals.css";
 
@@ -56,6 +57,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                         </div>
                     </header>
                     {children}
+                    <Toaster position="top-center" richColors theme="dark" />
                     </UserProvider>
                 </body>
             </html>

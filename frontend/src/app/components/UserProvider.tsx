@@ -8,9 +8,12 @@ import {
     useRef,
     useState,
 } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { backendFetch } from "@/lib/backend-api";
 import type { UserProfile } from "@/lib/user-types";
+
+const ONBOARDING_ALLOWLIST = ["/onboarding", "/sign-in", "/sign-up"];
 
 type UserProfileState = {
     user: UserProfile | null;
@@ -23,6 +26,8 @@ const UserProfileContext = createContext<UserProfileState | null>(null);
 
 export function UserProvider({ children }: { children: React.ReactNode }) {
     const { isLoaded, isSignedIn, userId } = useAuth();
+    const router = useRouter();
+    const pathname = usePathname();
     const [user, setUser] = useState<UserProfile | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -55,6 +60,13 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         fetchedForUserId.current = userId;
         void fetchProfile();
     }, [isLoaded, isSignedIn, userId, fetchProfile]);
+
+    useEffect(() => {
+        if (loading || !user) return;
+        if (user.onboarding_completed) return;
+        if (ONBOARDING_ALLOWLIST.some((p) => pathname?.startsWith(p))) return;
+        router.replace("/onboarding");
+    }, [user, loading, pathname, router]);
 
     return (
         <UserProfileContext.Provider

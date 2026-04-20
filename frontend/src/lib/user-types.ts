@@ -11,6 +11,7 @@ export interface UserProfile {
     date_of_birth: string | null;
     created_at: string | null;
     updated_at: string | null;
+    onboarding_completed: boolean | null;
 
     occupation: string | null;
     height_cm: number | null;
