@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 
 export interface GarmentSelection {
     mode: "local" | "upload" | "link";
@@ -105,7 +105,7 @@ export default function GarmentInput({ search, onSearchChange, onGarmentSelect }
         // Product page URL — scrape it
         setScraping(true);
         try {
-            const resp = await fetch(backendApiUrl("/api/scrape"), {
+            const resp = await backendFetch("/api/scrape", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ url: linkUrl, max_images: 3 }),

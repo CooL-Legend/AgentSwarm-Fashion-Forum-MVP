@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { useUser } from "@clerk/nextjs";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import { useImageEnrichment } from "../hooks/useImageEnrichment";
 import EnrichmentStatusPill from "./EnrichmentStatusPill";
 
@@ -13,7 +12,6 @@ interface Props {
 }
 
 export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: Props) {
-    const { user } = useUser();
     const { state: enrichment, startEnrichment, reset: resetEnrichment } = useImageEnrichment();
     const [personPreview, setPersonPreview] = useState<string | null>(null);
     const [personBase64, setPersonBase64] = useState<string | null>(null);
@@ -51,12 +49,10 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
             setPersonBase64(dataUrl);
             setResultImage(null);
             setError(null);
-            if (user?.id) {
-                startEnrichment({ userId: user.id, imageBase64: dataUrl });
-            }
+            startEnrichment({ imageBase64: dataUrl });
         };
         reader.readAsDataURL(file);
-    }, [user?.id, startEnrichment]);
+    }, [startEnrichment]);
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -79,7 +75,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
         setResultImage(null);
 
         try {
-            const resp = await fetch(backendApiUrl("/api/tryon"), {
+            const resp = await backendFetch("/api/tryon", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -126,7 +122,7 @@ export default function TryOnModal({ garmentImageUrl, onClose, onTryOnSubmit }: 
         setPoseResultImage(null);
         setError(null);
         try {
-            const resp = await fetch(backendApiUrl("/api/pose-transfer"), {
+            const resp = await backendFetch("/api/pose-transfer", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

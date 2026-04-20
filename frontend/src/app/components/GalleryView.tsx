@@ -7,10 +7,8 @@ import {
     useRef,
     useState,
 } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth, useUser } from "@clerk/nextjs";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
 import GarmentInput, { type GarmentSelection } from "./GarmentInput";
 import TryOnModal from "./TryOnModal";
@@ -44,10 +42,6 @@ function columnsClass(columns: number): string {
 }
 
 export default function GalleryView() {
-    const router = useRouter();
-    const { isLoaded, isSignedIn, getToken } = useAuth();
-    const { user } = useUser();
-
     const [images, setImages] = useState<ProductCardItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
@@ -81,65 +75,18 @@ export default function GalleryView() {
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
 
     useEffect(() => {
-        if (!isLoaded) return;
-        if (!isSignedIn) {
-            router.replace("/sign-in");
-            return;
-        }
-
         let cancelled = false;
 
         const loadCurrentUser = async () => {
             try {
-                const token = await getToken();
-                if (!token) throw new Error("Missing auth token");
-
-                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({
-                        first_name: user?.firstName ?? "",
-                        last_name: user?.lastName ?? "",
-                        username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email_id: user?.primaryEmailAddress?.emailAddress ?? "",
-                    }),
-                });
-                if (!bootstrapResp.ok) {
-                    const payload = await bootstrapResp.json().catch(() => null);
-                    if (payload?.code === "provision_failed") {
-                        router.replace("/sign-up");
-                        return;
-                    }
-                }
-
-                const response = await fetch(backendApiUrl("/api/users"), {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
-                });
+                const response = await backendFetch("/api/users");
                 if (!response.ok) {
-                    if (response.status === 404) {
-                        router.replace("/onboarding");
-                        return;
-                    }
                     throw new Error("Failed to load user");
                 }
-
                 const payload = await response.json();
                 const appUser = payload?.user ?? payload;
-
-                const isComplete = appUser?.onboarding_completed === true;
-                const isSkipped = appUser?.onboarding_skipped === true;
-                if (!isComplete && !isSkipped) {
-                    router.replace("/onboarding");
-                    return;
-                }
-
-                const raw = appUser?.sex;
-                const sex = typeof raw === "string" ? raw.trim().toLowerCase() : null;
+                const raw = appUser?.gender_identity;
+                const gender = typeof raw === "string" ? raw.trim().toLowerCase() : null;
                 const genderMap: Record<string, string> = {
                     male: "men",
                     female: "women",
@@ -147,8 +94,8 @@ export default function GalleryView() {
                     prefer_not_to_say: "",
                 };
                 if (!cancelled) {
-                    setUserGender(sex ? (genderMap[sex] ?? sex) : null);
-                    if (appUser?.user_id) setUserId(appUser.user_id);
+                    setUserGender(gender ? (genderMap[gender] ?? gender) : null);
+                    if (appUser?.id) setUserId(appUser.id);
                 }
             } catch (error) {
                 if (!cancelled) {
@@ -167,7 +114,7 @@ export default function GalleryView() {
         return () => {
             cancelled = true;
         };
-    }, [getToken, isLoaded, isSignedIn, router, user]);
+    }, []);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
@@ -206,7 +153,7 @@ export default function GalleryView() {
             }
 
             try {
-                const response = await fetch(`${backendApiUrl("/api/products")}?${params.toString()}`, {
+                const response = await backendFetch(`/api/products?${params.toString()}`, {
                     cache: "no-store",
                     signal: controller.signal,
                 });
@@ -586,7 +533,6 @@ export default function GalleryView() {
                         startTryOn({
                             personBase64,
                             garmentImageUrl: tryOnImage.imageUrl,
-                            userId: user?.id,
                             garmentId: tryOnImage.garmentId,
                         });
                         setTryOnImage(null);

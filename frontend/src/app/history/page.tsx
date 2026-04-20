@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth, useUser } from "@clerk/nextjs";
-import { backendApiUrl } from "@/lib/backend-api";
+import { backendFetch } from "@/lib/backend-api";
 
 interface TryonRow {
     id: string;
@@ -32,28 +30,14 @@ function formatDate(iso: string): string {
 }
 
 export default function HistoryPage() {
-    const router = useRouter();
-    const { isLoaded, isSignedIn } = useUser();
-    const { getToken } = useAuth();
     const [tryons, setTryons] = useState<TryonRow[] | null>(null);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!isLoaded) return;
-        if (!isSignedIn) {
-            router.replace("/sign-in");
-            return;
-        }
-
         let cancelled = false;
         (async () => {
             try {
-                const token = await getToken();
-                if (!token) throw new Error("Missing auth token");
-
-                const resp = await fetch(backendApiUrl("/api/tryons"), {
-                    headers: { Authorization: `Bearer ${token}` },
-                });
+                const resp = await backendFetch("/api/tryons");
                 if (!resp.ok) throw new Error(`Failed to load (${resp.status})`);
                 const data = await resp.json();
                 if (!cancelled) setTryons(data.tryons ?? []);
@@ -65,7 +49,7 @@ export default function HistoryPage() {
         return () => {
             cancelled = true;
         };
-    }, [isLoaded, isSignedIn, getToken, router]);
+    }, []);
 
     return (
         <main className="mx-auto max-w-6xl px-6 py-10">

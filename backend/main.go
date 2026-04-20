@@ -13,12 +13,13 @@ type AppConfig struct {
 	CORSOrigin        string
 	SupabaseURL       string
 	SupabaseAPIKey    string
-	ClerkSecretKey    string
+	ClerkSecretKey    string // used to fetch Clerk JWKS for JWT verification
 	ScraperURL        string
 	GoogleClientEmail string
 	GooglePrivateKey  string
 	GoogleProjectID   string
-	GeminiModel       string
+	GeminiModel        string
+	GeminiCaptionModel string
 	HFToken           string
 	VideoSpaceURL     string
 	ViewClassifierURL string
@@ -37,7 +38,8 @@ func loadConfig() (AppConfig, error) {
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
-		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		GeminiModel:        stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		GeminiCaptionModel: stringsTrimQuotes(getenv("GEMINI_CAPTION_MODEL", "gemini-2.5-flash")),
 		HFToken:           stringsTrimQuotes(getenv("HF_TOKEN", "")),
 		VideoSpaceURL:     normalizeScraperURL(getenv("HF_VIDEO_SPACE_URL", "https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space")),
 		ViewClassifierURL: normalizeScraperURL(getenv("HF_VIEW_API_URL", "https://huggingface.co/spaces/CooLLegend/front-back-view-api")),
@@ -47,6 +49,9 @@ func loadConfig() (AppConfig, error) {
 
 	if cfg.SupabaseURL == "" || cfg.SupabaseAPIKey == "" {
 		return cfg, errConfig("missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL fallback) and/or SUPABASE_SERVICE_ROLE_KEY")
+	}
+	if cfg.ClerkSecretKey == "" {
+		return cfg, errConfig("missing CLERK_SECRET_KEY — required for Clerk JWT verification")
 	}
 
 	return cfg, nil
@@ -99,13 +104,13 @@ func main() {
 	mux.HandleFunc("/api/scrape", withCORS(cfg, scrapeHandler(cfg)))
 	mux.HandleFunc("/api/tryon", withCORS(cfg, tryOnHandler(cfg)))
 	mux.HandleFunc("/api/users", withCORS(cfg, currentUserHandler(cfg)))
-	mux.HandleFunc("/api/users/bootstrap", withCORS(cfg, bootstrapUserHandler(cfg)))
-	mux.HandleFunc("/api/users/onboarding", withCORS(cfg, onboardingUserHandler(cfg)))
 	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
 	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
 	mux.HandleFunc("/api/upload-asset", withCORS(cfg, uploadAssetHandler(cfg)))
+	mux.HandleFunc("/api/images/upload", withCORS(cfg, uploadAssetHandler(cfg)))
 	mux.HandleFunc("/api/upload-profile", withCORS(cfg, uploadProfileHandler(cfg)))
 	mux.HandleFunc("/api/user-assets", withCORS(cfg, userAssetsHandler(cfg)))
+	mux.HandleFunc("/api/images", withCORS(cfg, listUserInputImagesHandler(cfg)))
 	mux.HandleFunc("/api/tryons", withCORS(cfg, tryonsListHandler(cfg)))
 
 	server := &http.Server{
