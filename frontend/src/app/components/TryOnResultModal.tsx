@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useUser } from "@clerk/nextjs";
 import { backendApiUrl } from "@/lib/backend-api";
 
 interface Props {
@@ -13,7 +12,6 @@ interface Props {
 }
 
 export default function TryOnResultModal({ personPreview, garmentImageUrl, resultImage, onClose }: Props) {
-    const { user } = useUser();
     const [poseImageBase64, setPoseImageBase64] = useState<string | null>(null);
     const [posePreview, setPosePreview] = useState<string | null>(null);
     const [poseTransferring, setPoseTransferring] = useState(false);
@@ -64,7 +62,6 @@ export default function TryOnResultModal({ personPreview, garmentImageUrl, resul
                 body: JSON.stringify({
                     result_image: resultImage,
                     pose_image: poseImageBase64,
-                    user_id: user?.id,
                 }),
             });
             if (!resp.ok) {

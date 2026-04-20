@@ -115,7 +115,6 @@ func insertUserInputImage(ctx context.Context, cfg AppConfig, payload map[string
 }
 
 // countUserInputImages returns the number of active (non-failed) rows for a user.
-// Used to gate onboarding advancement and enforce the 5-image cap.
 func countUserInputImages(ctx context.Context, cfg AppConfig, userID string) (int, error) {
 	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
 		return 0, fmt.Errorf("supabase not configured")
@@ -216,7 +215,8 @@ func listUserInputImages(ctx context.Context, cfg AppConfig, userID string) ([]u
 	return rows, nil
 }
 
-// updateUserInputImageEnrichment patches the description and view_type on an existing row in one round-trip.
+// updateUserInputImageEnrichment patches description, view_type, and status='completed'
+// on an existing row in one round-trip.
 // viewType is the DB enum value ("front" or "back") — see viewclassifier.go.
 func updateUserInputImageEnrichment(ctx context.Context, cfg AppConfig, id, description, viewType string) error {
 	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
@@ -237,6 +237,7 @@ func updateUserInputImageEnrichment(ctx context.Context, cfg AppConfig, id, desc
 	body, err := json.Marshal(map[string]any{
 		"description": description,
 		"view_type":   viewType,
+		"status":      "completed",
 	})
 	if err != nil {
 		return err
@@ -260,6 +261,50 @@ func updateUserInputImageEnrichment(ctx context.Context, cfg AppConfig, id, desc
 	if resp.StatusCode >= 400 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("user-input-images update failed: status=%d body=%s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+// markUserInputImageFailed PATCHes status='failed' on an enrichment row when caption fails.
+func markUserInputImageFailed(ctx context.Context, cfg AppConfig, id string) error {
+	if strings.TrimSpace(cfg.SupabaseURL) == "" || strings.TrimSpace(cfg.SupabaseAPIKey) == "" {
+		return fmt.Errorf("supabase not configured")
+	}
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("id is required")
+	}
+
+	endpoint, err := url.Parse(userInputImagesEndpoint(cfg))
+	if err != nil {
+		return err
+	}
+	q := endpoint.Query()
+	q.Set("id", "eq."+strings.TrimSpace(id))
+	endpoint.RawQuery = q.Encode()
+
+	body, err := json.Marshal(map[string]any{"status": "failed"})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, endpoint.String(), strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("apikey", cfg.SupabaseAPIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.SupabaseAPIKey)
+	req.Header.Set("Prefer", "return=minimal")
+
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("user-input-images mark-failed failed: status=%d body=%s", resp.StatusCode, string(b))
 	}
 	return nil
 }

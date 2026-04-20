@@ -17,17 +17,9 @@ export default function ProfileHeader({ user }: { user: UserProfile }) {
                 {/* Left: Avatar + text */}
                 <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
                     {/* Avatar */}
-                    {user.front_image ? (
-                        <img
-                            src={user.front_image}
-                            alt={`${user.first_name} ${user.last_name}`}
-                            className="h-20 w-20 shrink-0 rounded-full border-2 border-zinc-700 object-cover"
-                        />
-                    ) : (
-                        <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-zinc-700 bg-zinc-800 text-xl font-bold text-zinc-400">
-                            {getInitials(user.first_name, user.last_name)}
-                        </div>
-                    )}
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-full border-2 border-zinc-700 bg-zinc-800 text-xl font-bold text-zinc-400">
+                        {getInitials(user.first_name, user.last_name)}
+                    </div>
 
                     {/* Text block */}
                     <div>

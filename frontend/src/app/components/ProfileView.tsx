@@ -1,14 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth, useUser } from "@clerk/nextjs";
 import { backendApiUrl } from "@/lib/backend-api";
 import type { UserProfile } from "@/lib/user-types";
 import ProfileHeader from "./ProfileHeader";
 import HeroVisuals from "./HeroVisuals";
 import InformationGrid from "./InformationGrid";
 import VisualGallery from "./VisualGallery";
+
+type ProfileImage = {
+    id: string;
+    signed_url: string;
+    view_type?: string | null;
+    description?: string | null;
+};
 
 function ProfileSkeleton() {
     return (
@@ -58,75 +63,49 @@ function ProfileSkeleton() {
 }
 
 export default function ProfileView() {
-    const router = useRouter();
-    const { isLoaded, isSignedIn, getToken } = useAuth();
-    const { user: clerkUser } = useUser();
-
     const [user, setUser] = useState<UserProfile | null>(null);
+    const [images, setImages] = useState<ProfileImage[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!isLoaded) return;
-        if (!isSignedIn) {
-            router.replace("/sign-in");
-            return;
-        }
-
         const controller = new AbortController();
         setLoading(true);
         setError(null);
 
         const loadProfile = async () => {
             try {
-                const token = await getToken();
-                if (!token) throw new Error("No auth token found.");
-
-                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
-                    method: "POST",
-                    signal: controller.signal,
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({
-                        first_name: clerkUser?.firstName ?? "",
-                        last_name: clerkUser?.lastName ?? "",
-                        username: clerkUser?.username ?? clerkUser?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email: clerkUser?.primaryEmailAddress?.emailAddress ?? "",
-                    }),
-                });
-                if (!bootstrapResp.ok) {
-                    const payload = await bootstrapResp.json().catch(() => null);
-                    if (payload?.code === "provision_failed") {
-                        router.replace("/sign-up");
-                        return;
-                    }
-                }
-
                 const response = await fetch(backendApiUrl("/api/users"), {
                     signal: controller.signal,
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
                 });
                 if (!response.ok) {
-                    if (response.status === 404) {
-                        router.replace("/onboarding");
-                        return;
-                    }
                     throw new Error("Failed to load profile.");
                 }
 
                 const data = await response.json();
-                const appUser = data?.user;
-                const isComplete = appUser?.onboarding_completed === true;
-                if (!isComplete) {
-                    router.replace("/onboarding");
-                    return;
+                setUser(data?.user ?? null);
+
+                // Fetch the user's uploaded reference photos for the hero + gallery.
+                // Failure here shouldn't block the profile from rendering.
+                try {
+                    const imagesResp = await fetch(backendApiUrl("/api/images"), {
+                        signal: controller.signal,
+                    });
+                    if (imagesResp.ok) {
+                        const imagesData = await imagesResp.json();
+                        const list: ProfileImage[] = Array.isArray(imagesData?.images)
+                            ? imagesData.images
+                            : Array.isArray(imagesData?.assets)
+                              ? imagesData.assets
+                              : [];
+                        setImages(list);
+                    }
+                } catch (imgErr) {
+                    if (!controller.signal.aborted) {
+                        console.warn("[profile] images_fetch_failed", imgErr);
+                    }
                 }
 
-                setUser(appUser);
                 setLoading(false);
             } catch (err: unknown) {
                 if (controller.signal.aborted) return;
@@ -139,7 +118,7 @@ export default function ProfileView() {
         loadProfile();
 
         return () => controller.abort();
-    }, [clerkUser, getToken, isLoaded, isSignedIn, router]);
+    }, []);
 
     return (
         <main className="mx-auto max-w-6xl px-4 py-8">
@@ -171,17 +150,32 @@ export default function ProfileView() {
                 </div>
             )}
 
-            {user && (
-                <div className="space-y-8">
-                    <ProfileHeader user={user} />
-                    <HeroVisuals
-                        frontImage={user.front_image}
-                        backImage={user.back_image}
-                    />
-                    <InformationGrid user={user} />
-                    <VisualGallery images={user.images} />
-                </div>
-            )}
+            {user && (() => {
+                const frontImg =
+                    images.find((i) => i.view_type === "front") ?? images[0] ?? null;
+                const backImg =
+                    images.find((i) => i.view_type === "back" && i.id !== frontImg?.id) ??
+                    images.find((i) => i.id !== frontImg?.id) ??
+                    null;
+                const heroIds = new Set(
+                    [frontImg?.id, backImg?.id].filter((v): v is string => Boolean(v)),
+                );
+                const galleryUrls = images
+                    .filter((i) => !heroIds.has(i.id))
+                    .map((i) => i.signed_url);
+
+                return (
+                    <div className="space-y-8">
+                        <ProfileHeader user={user} />
+                        <HeroVisuals
+                            frontImage={frontImg?.signed_url ?? null}
+                            backImage={backImg?.signed_url ?? null}
+                        />
+                        <InformationGrid user={user} />
+                        <VisualGallery images={galleryUrls.length ? galleryUrls : null} />
+                    </div>
+                );
+            })()}
         </main>
     );
 }

@@ -61,6 +61,9 @@ func enrichUserInputImage(cfg AppConfig, id, gcsURL, mimeType, b64 string) {
 
 		if descErr != nil {
 			log.Printf("[enrich] caption_failed id=%s err=%v", id, descErr)
+			if mErr := markUserInputImageFailed(ctx, cfg, id); mErr != nil {
+				log.Printf("[enrich] mark_failed_patch_failed id=%s err=%v", id, mErr)
+			}
 			return
 		}
 		if err := updateUserInputImageEnrichment(ctx, cfg, id, desc, viewType); err != nil {
@@ -80,9 +83,9 @@ func captionUserImage(ctx context.Context, cfg AppConfig, mimeType, b64Image str
 		return "", fmt.Errorf("access_token: %w", err)
 	}
 
-	model := strings.TrimSpace(cfg.GeminiModel)
+	model := strings.TrimSpace(cfg.GeminiCaptionModel)
 	if model == "" {
-		model = "gemini-3.1-flash-image"
+		model = "gemini-2.5-flash"
 	}
 	if strings.TrimSpace(mimeType) == "" {
 		mimeType = "image/png"

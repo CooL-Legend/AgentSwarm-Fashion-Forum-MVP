@@ -673,16 +673,69 @@ type tryOnRequest struct {
 	PersonImage   string `json:"person_image"`
 	ClothImage    string `json:"cloth_image"`
 	ClothImageURL string `json:"cloth_image_url"`
-	UserID        string `json:"user_id"`
-	GarmentID     string `json:"garment_id"`
+	// UserID is ignored — the authenticated Clerk sub is authoritative.
+	UserID    string `json:"user_id"`
+	GarmentID string `json:"garment_id"`
 }
 
 type tryOnResponse struct {
-	Success    bool    `json:"success"`
-	Image      any     `json:"image"`
-	Raw        any     `json:"raw,omitempty"`
-	StoredPath *string `json:"stored_path,omitempty"`
-	StoredURL  *string `json:"stored_url,omitempty"`
+	Success      bool    `json:"success"`
+	Image        any     `json:"image"`
+	Raw          any     `json:"raw,omitempty"`
+	GenerationID string  `json:"generation_id,omitempty"`
+	SignedURL    string  `json:"signed_url,omitempty"`
+	OutputGSURI  string  `json:"output_gs_uri,omitempty"`
+	StoredPath   *string `json:"stored_path,omitempty"`
+	StoredURL    *string `json:"stored_url,omitempty"`
+}
+
+// ensureUserInputImage deduplicates or uploads a person image for the given
+// user and returns (image_id, gs://… URI). Shared by the image upload path and
+// the try-on path so both agree on a single source of truth for inputs.
+func ensureUserInputImage(ctx context.Context, cfg AppConfig, clerkID, b64 string) (string, string, error) {
+	clerkID = strings.TrimSpace(clerkID)
+	if clerkID == "" {
+		return "", "", fmt.Errorf("clerk id required")
+	}
+	if strings.TrimSpace(b64) == "" {
+		return "", "", fmt.Errorf("image required")
+	}
+	mimeType, ext := detectImageMimeAndExt(b64)
+	raw, err := base64.StdEncoding.DecodeString(stripDataURL(b64))
+	if err != nil {
+		return "", "", fmt.Errorf("decode base64: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	hashHex := hex.EncodeToString(sum[:])
+
+	if existing, lookupErr := findUserInputImageByHash(ctx, cfg, clerkID, hashHex); lookupErr == nil && existing != nil {
+		// Row already exists; reuse it. If the URL is an old https:// form, leave
+		// it alone — parseGCSURL downstream handles both shapes.
+		return existing.ID, existing.GCSURL, nil
+	}
+
+	imageID, uuidErr := newUUIDv4()
+	if uuidErr != nil {
+		return "", "", fmt.Errorf("uuid: %w", uuidErr)
+	}
+	objectPath := fmt.Sprintf("users/%s/input/%s%s", clerkID, imageID, ext)
+	if err := gcsUpload(ctx, cfg, objectPath, mimeType, raw); err != nil {
+		return "", "", fmt.Errorf("gcs upload: %w", err)
+	}
+	gsURI := gcsGSURI(objectPath)
+	row, insertErr := insertUserInputImage(ctx, cfg, map[string]any{
+		"id":        imageID,
+		"user_id":   clerkID,
+		"gcs_url":   gsURI,
+		"hash":      hashHex,
+		"view_type": viewTypeFront,
+	})
+	if insertErr != nil {
+		return "", "", fmt.Errorf("db insert: %w", insertErr)
+	}
+	// Fire-and-forget enrichment so captions/view-type land eventually.
+	enrichUserInputImage(cfg, row.ID, gsURI, mimeType, b64)
+	return row.ID, gsURI, nil
 }
 
 func tryOnHandler(cfg AppConfig) http.HandlerFunc {
@@ -697,6 +750,12 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
+		clerkID, err := currentUserID(cfg)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
+			return
+		}
+
 		var input tryOnRequest
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON body"})
@@ -707,11 +766,16 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Person image is required"})
 			return
 		}
+		productID := strings.TrimSpace(input.GarmentID)
+		if productID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "garment_id is required"})
+			return
+		}
 
 		clothBase64 := strings.TrimSpace(input.ClothImage)
 		if clothBase64 == "" && strings.TrimSpace(input.ClothImageURL) != "" {
-			imageBytes, err := fetchBinary(r.Context(), input.ClothImageURL, 20*time.Second)
-			if err != nil {
+			imageBytes, fetchErr := fetchBinary(r.Context(), input.ClothImageURL, 20*time.Second)
+			if fetchErr != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Failed to fetch garment image"})
 				return
 			}
@@ -723,18 +787,36 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
+		// Dedup/upload the person image so we have a stable user_input_images.id to FK.
+		inputImageID, _, ensureErr := ensureUserInputImage(r.Context(), cfg, clerkID, input.PersonImage)
+		if ensureErr != nil {
+			log.Printf("[api/tryon] input_image_failed user=%s err=%v", clerkID, ensureErr)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to persist person image"})
+			return
+		}
+
+		// Insert the tryon_generations row (status='processing') before firing Vertex AI.
+		genRow, insertErr := insertTryonGenerationProcessing(r.Context(), cfg, clerkID, productID, inputImageID)
+		if insertErr != nil {
+			log.Printf("[api/tryon] gen_insert_failed user=%s err=%v", clerkID, insertErr)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to record generation"})
+			return
+		}
+		startedAt := time.Now().UTC()
+
 		personBase64 := stripDataURL(input.PersonImage)
 		clothClean := stripDataURL(clothBase64)
 
 		accessToken, err := getAccessToken(r.Context(), cfg)
 		if err != nil {
 			log.Printf("[api/tryon] access_token_failed: %v", err)
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "oauth: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "OAuth token request failed"})
 			return
 		}
 
 		endpoint := fmt.Sprintf(
-			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict", // No gemini call in this -> google virtual tryon model
+			"https://us-central1-aiplatform.googleapis.com/v1/projects/%s/locations/us-central1/publishers/google/models/virtual-try-on-001:predict",
 			cfg.GoogleProjectID,
 		)
 
@@ -763,6 +845,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 
 		requestBody, err := json.Marshal(payload)
 		if err != nil {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "marshal: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build VTO request"})
 			return
 		}
@@ -772,6 +855,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(requestBody)))
 		if err != nil {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "build request: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Failed to build VTO request"})
 			return
 		}
@@ -781,6 +865,7 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 		resp, err := (&http.Client{}).Do(req)
 		if err != nil {
 			log.Printf("[api/tryon] upstream_request_failed: %v", err)
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "upstream: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Try-on service unavailable"})
 			return
 		}
@@ -788,38 +873,61 @@ func tryOnHandler(cfg AppConfig) http.HandlerFunc {
 
 		if resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, fmt.Sprintf("vton %d: %s", resp.StatusCode, string(body)), startedAt)
 			writeJSON(w, resp.StatusCode, map[string]string{"error": "VTON API error: " + string(body)})
 			return
 		}
 
 		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "decode: "+err.Error(), startedAt)
 			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Invalid response from VTON API"})
 			return
 		}
 
 		predictions, _ := result["predictions"].([]any)
 		if len(predictions) == 0 {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "no predictions returned", startedAt)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "No result generated"})
 			return
 		}
 
 		firstPrediction := predictions[0]
 		outputImage := extractPredictionImage(firstPrediction)
-		if outputImage != "" {
-			resultDataURL := "data:image/png;base64," + outputImage
+		if outputImage == "" {
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "prediction missing image bytes", startedAt)
 			writeJSON(w, http.StatusOK, tryOnResponse{
-				Success: true,
-				Image:   resultDataURL,
+				Success:      true,
+				Image:        nil,
+				Raw:          firstPrediction,
+				GenerationID: genRow.ID,
 			})
-			saveTryOnSession(cfg, input.UserID, input.GarmentID, input.PersonImage, outputImage, "google/virtual-try-on-001")
 			return
 		}
 
+		// Upload the result to GCS under the new generations/tryon layout.
+		outputPath := fmt.Sprintf("users/%s/generations/tryon/%s.png", clerkID, genRow.ID)
+		if err := gcsUploadBase64(r.Context(), cfg, outputPath, "image/png", outputImage); err != nil {
+			log.Printf("[api/tryon] output_upload_failed gen=%s err=%v", genRow.ID, err)
+			_ = markTryonFailed(context.Background(), cfg, genRow.ID, "gcs upload: "+err.Error(), startedAt)
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "Failed to persist result image"})
+			return
+		}
+		outputGSURI := gcsGSURI(outputPath)
+
+		if err := markTryonCompleted(context.Background(), cfg, genRow.ID, outputGSURI, startedAt); err != nil {
+			log.Printf("[api/tryon] gen_complete_failed gen=%s err=%v", genRow.ID, err)
+			// The GCS object is there and the response still carries the image — log and move on.
+		}
+
+		signedURL, _ := gcsSignedURL(cfg, outputPath, time.Hour)
+
 		writeJSON(w, http.StatusOK, tryOnResponse{
-			Success: true,
-			Image:   nil,
-			Raw:     firstPrediction,
+			Success:      true,
+			Image:        "data:image/png;base64," + outputImage,
+			GenerationID: genRow.ID,
+			OutputGSURI:  outputGSURI,
+			SignedURL:    signedURL,
 		})
 	}
 }
@@ -927,7 +1035,7 @@ func poseTransferHandler(cfg AppConfig) http.HandlerFunc {
 
 		model := strings.TrimSpace(cfg.GeminiModel)
 		if model == "" {
-			model = "gemini-3.1-flash-image"
+			model = "gemini-3.1-flash-image-preview"
 		}
 
 		endpoint := fmt.Sprintf(
@@ -1554,9 +1662,9 @@ func uploadAssetHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		// Authenticated user only — body user_id is ignored.
-		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		clerkID, err := currentUserID(cfg)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
 			return
 		}
 
@@ -1784,9 +1892,9 @@ func listUserInputImagesHandler(cfg AppConfig) http.HandlerFunc {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		clerkID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		clerkID, err := currentUserID(cfg)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
 			return
 		}
 
@@ -1837,9 +1945,9 @@ func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 		}
 
 		// Authenticated user only — query user_id param is ignored.
-		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		userID, err := currentUserID(cfg)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
 			return
 		}
 		kindFilter := strings.TrimSpace(r.URL.Query().Get("kind"))
@@ -1880,6 +1988,7 @@ func userAssetsHandler(cfg AppConfig) http.HandlerFunc {
 }
 
 // tryonsListHandler returns the authenticated user's try-on history, newest first.
+// Each row carries a freshly-minted 1h signed URL for the output image.
 func tryonsListHandler(cfg AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1887,9 +1996,9 @@ func tryonsListHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		userID, err := authenticatedClerkUserID(r.Context(), cfg, r)
+		userID, err := currentUserID(cfg)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Unauthorized"})
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "CURRENT_USER_ID not configured"})
 			return
 		}
 
@@ -1900,8 +2009,45 @@ func tryonsListHandler(cfg AppConfig) http.HandlerFunc {
 			return
 		}
 
-		log.Printf("[api/tryons] ok user=%s count=%d", userID, len(rows))
-		writeJSON(w, http.StatusOK, map[string]any{"tryons": rows})
+		type tryonItem struct {
+			ID                   string  `json:"id"`
+			ProductID            string  `json:"product_id"`
+			UserInputImageID     string  `json:"user_input_image_id"`
+			Status               string  `json:"status"`
+			OutputGCSURL         *string `json:"output_gcs_url,omitempty"`
+			SignedURL            string  `json:"signed_url,omitempty"`
+			ProcessingDurationMs *int    `json:"processing_duration_ms,omitempty"`
+			FeedbackScore        *int    `json:"feedback_score,omitempty"`
+			FeedbackText         *string `json:"feedback_text,omitempty"`
+			CreatedAt            string  `json:"created_at"`
+		}
+		items := make([]tryonItem, 0, len(rows))
+		for _, row := range rows {
+			item := tryonItem{
+				ID:                   row.ID,
+				ProductID:            row.ProductID,
+				UserInputImageID:     row.UserInputImageID,
+				Status:               row.Status,
+				OutputGCSURL:         row.OutputGCSURL,
+				ProcessingDurationMs: row.ProcessingDurationMs,
+				FeedbackScore:        row.FeedbackScore,
+				FeedbackText:         row.FeedbackText,
+				CreatedAt:            row.CreatedAt,
+			}
+			if row.OutputGCSURL != nil && strings.TrimSpace(*row.OutputGCSURL) != "" {
+				if _, objectPath, parseErr := parseGCSURL(*row.OutputGCSURL); parseErr == nil {
+					if signed, signErr := gcsSignedURL(cfg, objectPath, time.Hour); signErr == nil {
+						item.SignedURL = signed
+					} else {
+						log.Printf("[api/tryons] sign_failed gen=%s err=%v", row.ID, signErr)
+					}
+				}
+			}
+			items = append(items, item)
+		}
+
+		log.Printf("[api/tryons] ok user=%s count=%d", userID, len(items))
+		writeJSON(w, http.StatusOK, map[string]any{"tryons": items})
 	}
 }
 
@@ -1926,75 +2072,11 @@ func classifyObjectPath(userID, objectName string) (string, string) {
 	return kind, ""
 }
 
-// ─── Auto-save helpers for tryon and pose-transfer sessions ──────────────────
+// ─── Auto-save helpers for pose-transfer sessions ──────────────────
 
-// saveTryOnSession uploads the raw person image, the tryon result, and a meta.json
-// into gs://agent_swarm/users/{uid}/tryon/{session_id}/ — fire-and-forget.
-func saveTryOnSession(cfg AppConfig, userID, garmentID, personB64, resultB64, model string) {
-	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return
-	}
-	sessionID := randomID()
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-
-		// Save input (raw person photo) — shared under input/ for this session reference
-		inputPath := userObjectPath(userID, "input", newAssetFilename(".png"))
-		if err := gcsUploadBase64(ctx, cfg, inputPath, "image/png", personB64); err != nil {
-			log.Printf("[save/tryon] input_upload_failed user=%s err=%v", userID, err)
-		}
-
-		// Save try-on result under tryon/{session_id}/result.png
-		resultPath := userSessionPath(userID, sessionID, "result.png")
-		if err := gcsUploadBase64(ctx, cfg, resultPath, "image/png", resultB64); err != nil {
-			log.Printf("[save/tryon] result_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
-			return
-		}
-
-		// DB row for tryon_generations — user_id is the Clerk text id (matches public.users.user_id).
-		resultSigned, rSignErr := gcsSignedURL(cfg, resultPath, 7*24*time.Hour)
-		if rSignErr != nil {
-			log.Printf("[save/tryon] sign_result_failed user=%s session=%s err=%v", userID, sessionID, rSignErr)
-		}
-		inputSigned, iSignErr := gcsSignedURL(cfg, inputPath, 7*24*time.Hour)
-		if iSignErr != nil {
-			log.Printf("[save/tryon] sign_input_failed user=%s session=%s err=%v", userID, sessionID, iSignErr)
-		}
-		row := map[string]any{
-			"user_id":               userID,
-			"product_id":            garmentID,
-			"gcs_url":               gcsPublicURL(resultPath),
-			"person_img_url":        gcsPublicURL(inputPath),
-			"signed_url":            resultSigned,
-			"person_img_signed_url": inputSigned,
-		}
-		if err := insertTryonGeneration(ctx, cfg, row); err != nil {
-			log.Printf("[save/tryon] db_insert_failed user=%s session=%s err=%v", userID, sessionID, err)
-		}
-
-		// GCS meta.json sidecar (secondary record, kept for ops / legacy walkers)
-		meta := map[string]any{
-			"user_id":     userID,
-			"session_id":  sessionID,
-			"kind":        "tryon",
-			"garment_id":  garmentID,
-			"model":       model,
-			"bucket":      gcsBucket,
-			"input_path":  inputPath,
-			"result_path": resultPath,
-			"created_at":  time.Now().UTC().Format(time.RFC3339),
-		}
-		metaBytes, _ := json.MarshalIndent(meta, "", "  ")
-		metaPath := userSessionPath(userID, sessionID, "meta.json")
-		if err := gcsUpload(ctx, cfg, metaPath, "application/json", metaBytes); err != nil {
-			log.Printf("[save/tryon] meta_upload_failed user=%s session=%s err=%v", userID, sessionID, err)
-		}
-		log.Printf("[save/tryon] ok user=%s session=%s", userID, sessionID)
-	}()
-}
+// saveTryOnSession retired: the sync path in tryOnHandler now owns both the GCS
+// upload (users/{uid}/generations/tryon/{gen_id}.png) and the tryon_generations
+// lifecycle (processing → completed / failed).
 
 // savePoseTransferSession uploads the pose reference + final pose-transferred image
 // plus a meta.json — fire-and-forget.

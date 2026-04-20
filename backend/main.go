@@ -13,12 +13,13 @@ type AppConfig struct {
 	CORSOrigin        string
 	SupabaseURL       string
 	SupabaseAPIKey    string
-	ClerkSecretKey    string
+	CurrentUserID     string // single-user mode: every handler acts as this user
 	ScraperURL        string
 	GoogleClientEmail string
 	GooglePrivateKey  string
 	GoogleProjectID   string
-	GeminiModel       string
+	GeminiModel        string
+	GeminiCaptionModel string
 	HFToken           string
 	VideoSpaceURL     string
 	ViewClassifierURL string
@@ -32,12 +33,13 @@ func loadConfig() (AppConfig, error) {
 		CORSOrigin:        getenv("BACKEND_CORS_ORIGIN", "*"),
 		SupabaseURL:       getenv("SUPABASE_URL", getenv("NEXT_PUBLIC_SUPABASE_URL", "")),
 		SupabaseAPIKey:    getenv("SUPABASE_SERVICE_ROLE_KEY", getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "")),
-		ClerkSecretKey:    stringsTrimQuotes(getenv("CLERK_SECRET_KEY", "")),
+		CurrentUserID:     stringsTrimQuotes(getenv("CURRENT_USER_ID", "")),
 		ScraperURL:        normalizeScraperURL(getenv("SCRAPER_URL", "https://varun2808-product-image-scraper.hf.space")),
 		GoogleClientEmail: stringsTrimQuotes(getenv("GOOGLE_CLIENT_EMAIL", "")),
 		GooglePrivateKey:  getenv("GOOGLE_PRIVATE_KEY", ""),
 		GoogleProjectID:   stringsTrimQuotes(getenv("GOOGLE_PROJECT_ID", "")),
-		GeminiModel:       stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		GeminiModel:        stringsTrimQuotes(getenv("GEMINI_MODEL", "gemini-3.1-flash-image-preview")),
+		GeminiCaptionModel: stringsTrimQuotes(getenv("GEMINI_CAPTION_MODEL", "gemini-2.5-flash")),
 		HFToken:           stringsTrimQuotes(getenv("HF_TOKEN", "")),
 		VideoSpaceURL:     normalizeScraperURL(getenv("HF_VIDEO_SPACE_URL", "https://zerogpu-aoti-wan2-2-fp8da-aoti-faster.hf.space")),
 		ViewClassifierURL: normalizeScraperURL(getenv("HF_VIEW_API_URL", "https://huggingface.co/spaces/CooLLegend/front-back-view-api")),
@@ -47,6 +49,9 @@ func loadConfig() (AppConfig, error) {
 
 	if cfg.SupabaseURL == "" || cfg.SupabaseAPIKey == "" {
 		return cfg, errConfig("missing SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL fallback) and/or SUPABASE_SERVICE_ROLE_KEY")
+	}
+	if cfg.CurrentUserID == "" {
+		return cfg, errConfig("missing CURRENT_USER_ID — this build operates in single-user mode; set it in .env to a public.users.id value")
 	}
 
 	return cfg, nil
@@ -99,8 +104,6 @@ func main() {
 	mux.HandleFunc("/api/scrape", withCORS(cfg, scrapeHandler(cfg)))
 	mux.HandleFunc("/api/tryon", withCORS(cfg, tryOnHandler(cfg)))
 	mux.HandleFunc("/api/users", withCORS(cfg, currentUserHandler(cfg)))
-	mux.HandleFunc("/api/users/bootstrap", withCORS(cfg, bootstrapUserHandler(cfg)))
-	mux.HandleFunc("/api/users/onboarding", withCORS(cfg, onboardingUserHandler(cfg)))
 	mux.HandleFunc("/api/pose-transfer", withCORS(cfg, poseTransferHandler(cfg)))
 	mux.HandleFunc("/api/generate-video", withCORS(cfg, generateVideoHandler(cfg)))
 	mux.HandleFunc("/api/upload-asset", withCORS(cfg, uploadAssetHandler(cfg)))

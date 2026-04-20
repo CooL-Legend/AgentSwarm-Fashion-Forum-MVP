@@ -7,8 +7,6 @@ import {
     useRef,
     useState,
 } from "react";
-import { useRouter } from "next/navigation";
-import { useAuth, useUser } from "@clerk/nextjs";
 import type { ProductCardItem, ProductsPageResponse } from "@/lib/gallery-types";
 import { backendApiUrl } from "@/lib/backend-api";
 import GalleryLightbox from "./GalleryLightbox";
@@ -44,10 +42,6 @@ function columnsClass(columns: number): string {
 }
 
 export default function GalleryView() {
-    const router = useRouter();
-    const { isLoaded, isSignedIn, getToken } = useAuth();
-    const { user } = useUser();
-
     const [images, setImages] = useState<ProductCardItem[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingMore, setLoadingMore] = useState(false);
@@ -81,62 +75,16 @@ export default function GalleryView() {
     const columns = useMemo(() => resolveColumns(viewportWidth), [viewportWidth]);
 
     useEffect(() => {
-        if (!isLoaded) return;
-        if (!isSignedIn) {
-            router.replace("/sign-in");
-            return;
-        }
-
         let cancelled = false;
 
         const loadCurrentUser = async () => {
             try {
-                const token = await getToken();
-                if (!token) throw new Error("Missing auth token");
-
-                const bootstrapResp = await fetch(backendApiUrl("/api/users/bootstrap"), {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({
-                        first_name: user?.firstName ?? "",
-                        last_name: user?.lastName ?? "",
-                        username: user?.username ?? user?.primaryEmailAddress?.emailAddress?.split("@")[0] ?? "",
-                        email: user?.primaryEmailAddress?.emailAddress ?? "",
-                    }),
-                });
-                if (!bootstrapResp.ok) {
-                    const payload = await bootstrapResp.json().catch(() => null);
-                    if (payload?.code === "provision_failed") {
-                        router.replace("/sign-up");
-                        return;
-                    }
-                }
-
-                const response = await fetch(backendApiUrl("/api/users"), {
-                    headers: {
-                        Authorization: `Bearer ${token}`,
-                    },
-                });
+                const response = await fetch(backendApiUrl("/api/users"));
                 if (!response.ok) {
-                    if (response.status === 404) {
-                        router.replace("/onboarding");
-                        return;
-                    }
                     throw new Error("Failed to load user");
                 }
-
                 const payload = await response.json();
                 const appUser = payload?.user ?? payload;
-
-                const isComplete = appUser?.onboarding_completed === true;
-                if (!isComplete) {
-                    router.replace("/onboarding");
-                    return;
-                }
-
                 const raw = appUser?.gender_identity;
                 const gender = typeof raw === "string" ? raw.trim().toLowerCase() : null;
                 const genderMap: Record<string, string> = {
@@ -166,7 +114,7 @@ export default function GalleryView() {
         return () => {
             cancelled = true;
         };
-    }, [getToken, isLoaded, isSignedIn, router, user]);
+    }, []);
 
     const fetchProducts = useCallback(
         async ({ cursor, reset }: { cursor: string | null; reset: boolean }) => {
@@ -585,7 +533,6 @@ export default function GalleryView() {
                         startTryOn({
                             personBase64,
                             garmentImageUrl: tryOnImage.imageUrl,
-                            userId: user?.id,
                             garmentId: tryOnImage.garmentId,
                         });
                         setTryOnImage(null);
